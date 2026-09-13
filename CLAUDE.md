@@ -6,7 +6,7 @@ Deterministic policy enforcement for AI agent tool calls. Rust. Single binary.
 
 ```bash
 cargo build --release          # build
-cargo test                     # 231 tests (unit, integration, adversarial, self-protection, inject)
+cargo test                     # unit, integration, adversarial, self-protection, inject, admission
 cargo install --path .         # install to ~/.cargo/bin
 
 # Hook mode (default — reads stdin, writes stdout)
@@ -45,11 +45,19 @@ src/
   policy.rs        — Policy engine, condition functions, first-match-wins auth + advisory inject pass
   vault.rs         — Encrypted vault (Argon2id + AES-256-GCM), 3-tier, spending ledger, scoped credentials
   hook.rs          — Claude/Codex/Antigravity/OpenCode hook I/O adapters (stdin JSON → stdout JSON)
+  integration.rs   — versioned Kindex task admission, receipt ledger, read-only capability report
+  claude_install.rs — explicit embedded-adapter installation; exact retirement, backups, no enforcement enablement
+  redaction.rs     — pure sanitizer shared by diagnostic persistence and optional host projections
   mcp_server.rs    — MCP management server (17 tools, rmcp), locked-rule guards, auto-sign
   mcp_proxy.rs     — MCP proxy for upstream servers (rmcp), hot-reload policy
 tests/
   integration_hook.rs  — End-to-end hook subprocess tests (including self-protection)
   integration_cli.rs   — CLI subcommand integration tests
+  integration_protocol.rs — admission replay, scope/revision, policy and result-delivery tests
+  integration_install.rs — isolated binary-only adapter install and safe retirement tests
+  claude_function_host.py — isolated real Claude host with synthetic local provider
+adapters/
+  claude-function/ — optional TypeScript adapter; no runtime import by legacy clients
 examples/
   basic_policy.yaml       — Simple deny/ask rules
   spending_limits.yaml    — Cumulative spending with vault
@@ -65,6 +73,9 @@ examples/
 - **Compiled-default reconciliation**: Current built-ins overlay stale system-policy snapshots by rule name on every load. Additional human-authored system rules remain intact.
 - **Reserved built-in names**: Names returned by `baseline_system_config()` are binary-owned. Host-specific system rules use distinct names; user rules are the supported override layer for unlocked defaults.
 - **Advisory injection**: `INJECT` rules are a separate post-auth pass. They can probabilistically emit context through hook output, but they never authorize or deny tool calls. Authorization remains deterministic.
+- **Task delegation**: admit only exact native task-state to Kindex operation pairs. Remove only the binary-owned native-store guard for source evaluation; evaluate all other source rules and both canonical MCP and semantic target identities. An admission receipt proves authorized intent, not completion. Preserve the host permission flow.
+- **Diagnostic sanitation**: sanitize before truncating or persisting parameters, preflight violations and result deliveries. Reject secret-bearing preflight definitions instead of silently rewriting policy semantics. Never replace policy-evaluation inputs with sanitized copies.
+- **Optional function adapter**: qualified against Claude 2.1.263 early access. Disabled by default, separate from legacy adapters, and refuses detected legacy coexistence. The CLI cannot attest host plugin activation. No all-log/transcript guarantee; historical raw data is not migrated automatically.
 - **Session key file encrypted** with device-specific key (machine ID + username via HKDF)
 - **Brute-force protection**: 5 attempts then 5-minute lockout (vault.rs)
 - **Policy HMAC integrity**: `signet-eval sign` writes HMAC sidecars for both policy.yaml and rules.yaml, verified on every hook eval when vault exists. MCP mutations auto-sign after every change.

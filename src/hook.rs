@@ -289,7 +289,7 @@ fn normalize_antigravity_tool_call(tool_call: AntigravityToolCall) -> Result<Too
 
 /// Evaluate a tool call against preflight soft constraints.
 /// Returns the first matching constraint (if any).
-fn evaluate_preflight_constraint(
+pub(crate) fn evaluate_preflight_constraint(
     call: &ToolCall,
     preflight: &Preflight,
     vault: &Vault,
@@ -441,7 +441,7 @@ pub fn run_hook_with_adapter(
                             .push(format!(
                                 "{}({})",
                                 viol.tool_name,
-                                &viol.parameters_summary[..viol.parameters_summary.len().min(60)]
+                                crate::redaction::summary(&viol.parameters_summary, 60)
                             ));
                     }
 
@@ -466,7 +466,7 @@ pub fn run_hook_with_adapter(
                     }
 
                     let task_short = if preflight.task.len() > 80 {
-                        format!("{}...", &preflight.task[..77])
+                        format!("{}...", crate::redaction::summary(&preflight.task, 77))
                     } else {
                         preflight.task.clone()
                     };
@@ -512,7 +512,7 @@ pub fn run_hook_with_adapter(
                                 preflight_id: preflight.id.clone(),
                                 constraint_name: constraint.name.clone(),
                                 tool_name: call.tool_name.clone(),
-                                parameters_summary: detail[..detail.len().min(200)].to_string(),
+                                parameters_summary: crate::redaction::summary(&detail, 200),
                                 alternative: constraint.alternative.clone(),
                                 timestamp: SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
@@ -582,7 +582,7 @@ pub fn run_hook_with_adapter(
             final_decision.as_lowercase(),
             category,
             amt,
-            &detail[..detail.len().min(500)],
+            &crate::redaction::summary(&detail, 500),
         );
     }
 
@@ -616,6 +616,8 @@ fn emit_decision(
     reason: Option<String>,
     additional_context: Option<String>,
 ) {
+    let reason = reason.map(|v| crate::redaction::text(&v));
+    let additional_context = additional_context.map(|v| crate::redaction::text(&v));
     match (adapter, event) {
         (HookAdapter::Claude | HookAdapter::OpenCode, _) => {
             emit_pre_tool_use_decision("PreToolUse", decision, reason, additional_context)
@@ -833,7 +835,7 @@ fn resolve_ensure(config: &EnsureConfig, locked: bool, call: &ToolCall) -> (bool
 }
 
 /// Resolve an Ensure evaluation result by running the check script.
-fn resolve_ensure_result(result: EvaluationResult, call: &ToolCall) -> EvaluationResult {
+pub(crate) fn resolve_ensure_result(result: EvaluationResult, call: &ToolCall) -> EvaluationResult {
     if let Some(ref ensure_config) = result.ensure_config {
         let (passed, stderr) = resolve_ensure(ensure_config, result.matched_locked, call);
         if passed {

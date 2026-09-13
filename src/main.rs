@@ -1,6 +1,9 @@
+mod claude_install;
 mod embedded_checks;
 mod hook;
+mod integration;
 mod policy;
+mod redaction;
 mod vault;
 
 #[cfg(feature = "mcp")]
@@ -36,6 +39,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Versioned function-hook capability and delegated-intent protocol (JSON stdin/stdout)
+    Integration {
+        #[command(subcommand)]
+        action: integration::Action,
+    },
     /// Evaluate a tool call from stdin (default, hook mode)
     Eval,
     /// Initialize default policy file
@@ -162,6 +170,9 @@ fn run() -> i32 {
     };
 
     match cli.command {
+        Some(Command::Integration { action }) => {
+            integration::run(action, &policy_path, &rules_path)
+        }
         None | Some(Command::Eval) => {
             let v = vault::try_load_vault();
             // If vault exists, verify HMAC for both policy files — tampered files fall back to safe defaults.

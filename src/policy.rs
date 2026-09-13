@@ -199,7 +199,7 @@ pub struct PolicyFix {
     pub rules_modified: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledRule {
     pub name: String,
     pub tool_regex: Regex,
@@ -213,7 +213,7 @@ pub struct CompiledRule {
     pub inject: Option<InjectConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledPolicy {
     pub rules: Vec<CompiledRule>,
     pub default_action: Decision,
@@ -516,6 +516,14 @@ pub fn evaluate(
 
         // Check tool name regex
         if !rule.tool_regex.is_match(&call.tool_name) {
+            continue;
+        }
+        // These native tools cannot edit settings. Do not classify shell text:
+        // a Bash command that reads a file can still write later in the same call.
+        if rule.locked
+            && rule.name == "protect_hook_config"
+            && matches!(call.tool_name.as_str(), "Read" | "Grep" | "Glob")
+        {
             continue;
         }
 
@@ -1373,6 +1381,19 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
                                 }
                             }
                         }
+                        Err(_)
+                            if cfg!(unix)
+                                && ec.check == crate::embedded_checks::GITHUB_IDENTITY_CHECK
+                                && std::fs::symlink_metadata(
+                                    crate::vault::signet_dir().join("checks").join(&ec.check),
+                                )
+                                .is_err_and(|error| {
+                                    error.kind() == std::io::ErrorKind::NotFound
+                                }) =>
+                        {
+                            // The binary installs this trusted script before its first
+                            // ENSURE use. Validation remains read-only on a fresh profile.
+                        }
                         Err(_) => {
                             // checks dir may not exist yet — just a warning
                             diagnostics.push(ValidationDiagnostic {
@@ -1690,19 +1711,19 @@ pub fn self_protection_rules() -> Vec<PolicyRule> {
             ensure: None,
             inject: None,
         },
-        // Routes Anthropic's session-local Task* tool family to a persistent task store.
+        // Routes task-state tools to durable storage, leaving execution management alone.
         // Locked because the user has elected to enforce this universally — the agent
-        // should not silently fall back to ephemeral Anthropic task tracking.
+        // should not silently fall back to a parallel native task store.
         PolicyRule {
             name: "prefer_persistent_task_store".into(),
-            tool_pattern: "^Task.*$".into(),
+            tool_pattern: "^(TaskCreate|TaskUpdate|TaskList|TaskGet|TodoWrite)$".into(),
             conditions: vec!["true".into()],
             action: Decision::Deny,
             locked: true,
             reason: Some(
-                "Claude Task* tools (TaskCreate / TaskUpdate / TaskList / TaskGet / \
-                 TaskOutput / TaskStop) are denied by default because they are session-local \
-                 and disappear when the conversation ends."
+                "Claude task-state tools (TaskCreate / TaskUpdate / TaskList / TaskGet / \
+                 TodoWrite) are denied by default to keep Kindex as the authoritative \
+                 durable, graph-linked task store across sessions."
                     .into(),
             ),
             alternative: Some(
@@ -4389,8 +4410,7 @@ rules:
         }
     }
 
-    /// The shipped locked rule must deny every Task* harness tool by default and
-    /// must not catch unrelated tools (Bash, kindex's task tools).
+    /// Durable task policy must leave subagent execution management usable.
     #[test]
     fn test_prefer_persistent_task_store_denies_anthropic_task_family() {
         let policy = default_policy();
@@ -4404,15 +4424,13 @@ rules:
         assert!(rule.locked, "prefer_persistent_task_store must be locked");
         assert_eq!(rule.action, Decision::Deny);
 
-        // All Anthropic Task* variants must deny.
+        // Only tools whose authority is task state are redirected.
         for tool in &[
             "TaskCreate",
             "TaskUpdate",
             "TaskList",
             "TaskGet",
-            "TaskOutput",
-            "TaskStop",
-            "TaskDelete",
+            "TodoWrite",
         ] {
             let call = make_call(tool, serde_json::json!({}));
             let result = evaluate(&call, &policy, None);
@@ -4433,6 +4451,13 @@ rules:
             assert!(reason.contains("durability"));
         }
 
+        for tool in ["Agent", "Task", "TaskOutput", "TaskStop", "TaskDelete"] {
+            let result = evaluate(&make_call(tool, serde_json::json!({})), &policy, None);
+            assert_ne!(
+                result.matched_rule.as_deref(),
+                Some("prefer_persistent_task_store")
+            );
+        }
         // Unrelated tools must NOT be matched by this rule.
         let bash = make_call("Bash", serde_json::json!({"command": "echo hi"}));
         let bash_result = evaluate(&bash, &policy, None);

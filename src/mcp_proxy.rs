@@ -147,13 +147,13 @@ impl ServerHandler for ProxyServer {
                 } else {
                     0.0
                 };
-                let detail = args_value.to_string();
+                let detail = crate::redaction::value(&args_value).to_string();
                 v.log_action(
                     &tool_name,
                     result.decision.as_lowercase(),
                     category,
                     amt,
-                    &detail[..detail.len().min(500)],
+                    &crate::redaction::summary(&detail, 500),
                 );
             }
 
