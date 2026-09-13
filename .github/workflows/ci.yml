@@ -23,9 +23,11 @@ jobs:
       - name: Formatting
         run: cargo +stable fmt --all --check
       - name: Tests with MCP
-        run: cargo +stable test --workspace --locked
+        # The suite includes wall-clock budgets. Exercise optimized code without
+        # contending with the suite's Argon2 tests on shared runners.
+        run: cargo +stable test --workspace --release --locked -- --test-threads=1
       - name: Tests without MCP
-        run: cargo +stable test --workspace --locked --no-default-features
+        run: cargo +stable test --workspace --release --locked --no-default-features -- --test-threads=1
       - name: Release binary
         run: cargo +stable build --release --locked
       - name: Verify packaged source and embedded adapter

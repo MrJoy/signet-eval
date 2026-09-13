@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -145,7 +146,10 @@ summary = {"artifacts": str(root), "exit_code": result.returncode, "requests": l
 print(json.dumps(summary), flush=True)
 assert result.returncode == 0, "host process failed"
 debug = (root / "debug.log").read_text()
-assert not any("hooks module" in line and "failed" in line for line in debug.splitlines()), "plugin failed to load or execute"
+# A normal policy refusal can say "resolved by a hooks module (deny: ... failed)".
+# Only module diagnostics indicate a loader/callback failure; the result assertions
+# below independently check whether an admitted or refused operation had an effect.
+assert not any(re.search(r"\] hooks module .*failed", line) for line in debug.splitlines()), "plugin failed to load or execute"
 rows = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
 results = [part for row in rows for part in row.get("message", {}).get("content", []) if isinstance(part, dict) and part.get("type") == "tool_result"]
 assert len(results) == (2 if args.kindex_plugin else 1), "missing tool result"
