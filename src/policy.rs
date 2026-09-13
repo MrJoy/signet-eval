@@ -1381,6 +1381,19 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
                                 }
                             }
                         }
+                        Err(_)
+                            if cfg!(unix)
+                                && ec.check == crate::embedded_checks::GITHUB_IDENTITY_CHECK
+                                && std::fs::symlink_metadata(
+                                    crate::vault::signet_dir().join("checks").join(&ec.check),
+                                )
+                                .is_err_and(|error| {
+                                    error.kind() == std::io::ErrorKind::NotFound
+                                }) =>
+                        {
+                            // The binary installs this trusted script before its first
+                            // ENSURE use. Validation remains read-only on a fresh profile.
+                        }
                         Err(_) => {
                             // checks dir may not exist yet — just a warning
                             diagnostics.push(ValidationDiagnostic {

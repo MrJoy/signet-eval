@@ -3,8 +3,12 @@
 use std::process::Command;
 
 fn signet_eval(args: &[&str]) -> (String, String, i32) {
+    let isolated = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_signet-eval"))
         .args(args)
+        .env("HOME", isolated.path())
+        .env("SIGNET_DIR", isolated.path().join("state"))
+        .env("CLAUDE_CONFIG_DIR", isolated.path().join("claude"))
         .output()
         .expect("failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -82,6 +86,7 @@ fn test_init_and_validate() {
         stdout.contains("Policy valid"),
         "stdout should contain 'Policy valid': {stdout}"
     );
+    assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
 }
 
 #[test]
@@ -106,6 +111,37 @@ fn test_init_preserves_user_rules() {
         content.contains("my_custom_rule"),
         "User rules should be preserved after init"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn validation_keeps_warnings_for_missing_custom_and_broken_builtin_checks() {
+    use std::os::unix::fs::symlink;
+    for check in ["custom-check", "gh-identity-matches-remote"] {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = dir.path().join("policy.yaml");
+        std::fs::write(
+            &policy,
+            format!("version: 1\ndefault_action: ALLOW\nrules:\n- name: check\n  tool_pattern: '^Bash$'\n  conditions: ['true']\n  action: ENSURE\n  ensure:\n    check: {check}\n    timeout: 5\n"),
+        ).unwrap();
+        if check == "gh-identity-matches-remote" {
+            std::fs::create_dir(dir.path().join("checks")).unwrap();
+            symlink(
+                dir.path().join("missing"),
+                dir.path().join("checks").join(check),
+            )
+            .unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_signet-eval"))
+            .args(["--policy-path", policy.to_str().unwrap(), "validate"])
+            .env("HOME", dir.path())
+            .env("SIGNET_DIR", dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Cannot resolve ensure script"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Policy valid"));
+    }
 }
 
 #[test]
