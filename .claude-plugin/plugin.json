@@ -3,8 +3,8 @@
   "description": "Deterministic policy enforcement for AI agent tool calls across Claude Code, Codex, Antigravity, and OpenCode.",
   "version": "3.12.2",
   "author": {
-    "name": "Jeremy McEntire",
-    "url": "https://github.com/jmcentire"
+    "name": "Wander",
+    "url": "https://github.com/wandercom"
   },
   "repository": "https://github.com/wandercom/signet-eval",
   "license": "MIT",
