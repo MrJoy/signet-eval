@@ -25,9 +25,9 @@ jobs:
       - name: Tests with MCP
         # The suite includes wall-clock budgets. Exercise optimized code without
         # contending with the suite's Argon2 tests on shared runners.
-        run: cargo +stable test --workspace --release --locked -- --test-threads=1
+        run: cargo +stable test --workspace --release --locked --no-fail-fast -- --test-threads=1
       - name: Tests without MCP
-        run: cargo +stable test --workspace --release --locked --no-default-features -- --test-threads=1
+        run: cargo +stable test --workspace --release --locked --no-default-features --no-fail-fast -- --test-threads=1
       - name: Release binary
         run: cargo +stable build --release --locked
       - name: Verify packaged source and embedded adapter

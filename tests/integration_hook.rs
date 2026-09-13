@@ -94,8 +94,31 @@ fn run_identity_hook_with_env(
     let shim_dir = home.join(".gh-shim");
     let fake_bin = dir.path().join("bin");
     let state_dir = dir.path().join("state");
+    let repository = dir.path().join("repository");
     std::fs::create_dir_all(&shim_dir).unwrap();
     std::fs::create_dir_all(&fake_bin).unwrap();
+    std::fs::create_dir(&repository).unwrap();
+    // The identity being verified belongs to this fixture, independent of the
+    // source checkout's owner, local email, and the developer's global config.
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/jmcentire/example.git",
+        ],
+        vec!["config", "user.email", "jandrewmcentire@gmail.com"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&repository)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap()
+            .success());
+    }
 
     let shim = shim_dir.join("gh");
     std::fs::write(&shim, "#!/bin/sh\nexit 99\n").unwrap();
@@ -153,7 +176,9 @@ exit 1
         .env_remove("GH_AS")
         .env_remove("GH_TOKEN")
         .env_remove("GITHUB_TOKEN")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(&repository)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
