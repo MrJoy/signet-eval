@@ -1,6 +1,6 @@
 # signet-eval
 
-Deterministic policy enforcement for AI agent tool calls. Every action an agent proposes passes through user-defined rules before execution. No LLM in the authorization path. Advisory nudges are separate from authorization. 25ms end-to-end.
+Deterministic policy enforcement for AI agent tool calls. Integrated tool calls pass through user-defined rules before execution. No LLM in the authorization path. Advisory nudges are separate from authorization.
 
 ## Install
 
@@ -20,6 +20,11 @@ the repository metadata; the runtime is the local `signet-eval serve` stdio
 server.
 
 ## Quick Start
+
+The command-hook adapters below remain supported and independent. For Claude
+Code's optional early-access function hooks, see the
+[function adapter](adapters/claude-function/README.md). It is disabled by default;
+installing/building this package does not activate it or change user settings.
 
 **1. Hook into Claude Code** — add to `~/.claude/settings.json`:
 
@@ -110,7 +115,7 @@ Self-protection rules are **locked** — they cannot be removed, edited, or reor
 | Write/Edit `settings.json` / `settings.local.json` | **ask** | yes |
 | Bash `kill`/`pkill`/`killall` + `signet` | **deny** | yes |
 | Direct edit tools without recent Kindex tag/search/context | **deny** | yes |
-| Claude `Task*` tools (ephemeral task state) | **deny** | yes |
+| Claude `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TodoWrite` | **deny** | yes |
 | `rm`, `rmdir` | **deny** | |
 | `git push --force` | **ask** | |
 | Git remote and `gh` operations with mismatched target-owner identity | **deny** | |
@@ -254,7 +259,7 @@ signet-eval ships with locked rules that prevent an AI agent from disabling its 
 
 5. **protect_preflight_storage** — Denies agent-side mutation of preflight records
 6. **require_kindex_engagement_before_edits** — Denies direct edit tools until durable session context is recorded
-7. **prefer_persistent_task_store** — Denies ephemeral `Task*` state and points agents to Kindex tasks
+7. **prefer_persistent_task_store** — Denies the five Claude task-state tools above and points agents to durable Kindex tasks. `Agent`, legacy subagent `Task`, `TaskOutput`, and `TaskStop` are not task-state tools and are not blocked by this rule.
 8. **protect_checks_dir** — Denies agent-side replacement of trusted ENSURE scripts
 9. **protect_vault_passphrase** — Reserves vault setup and unlock operations for the human
 10. **protect_signet_symlink** — Denies symlink bypasses targeting protected enforcement surfaces
@@ -324,6 +329,11 @@ claude mcp add --scope user --transport stdio signet-proxy -- signet-eval proxy
 | `signet-eval --adapter codex` | Codex `PreToolUse` hook evaluation |
 | `signet-eval --adapter codex-permission` | Codex `PermissionRequest` hook evaluation |
 | `signet-eval --adapter antigravity` | Antigravity `PreToolUse` hook evaluation |
+| `signet-eval integration describe` | Read-only policy/capability inspection from JSON stdin |
+| `signet-eval integration adjudicate` | Scoped, revision-bound Kindex task admission with durable intent receipt |
+| `signet-eval integration record-result` | Idempotent delivery of a Kindex task receipt; not proof of execution |
+| `signet-eval integration redact` | Structured sanitizer for controlled output projections |
+| `signet-eval integration install-modern` | Explicitly install the binary-embedded Claude adapter with backups; preserves enforcement disabled state |
 | `signet-eval init` | Write default policy with locked self-protection rules |
 | `signet-eval rules` | Show current policy rules (locked rules tagged) |
 | `signet-eval validate` | Check policy for errors |

@@ -319,6 +319,34 @@ fn test_hook_allows_read() {
 }
 
 #[test]
+fn hook_settings_reads_do_not_grant_settings_mutation_permission() {
+    for tool in ["Read", "Grep", "Glob"] {
+        let input = serde_json::json!({"tool_name":tool,"tool_input":{"file_path":"/app/.claude/settings.json","pattern":"settings.local.json"}});
+        let (out, code) = run_hook(&input.to_string());
+        assert_eq!(code, 0);
+        assert_eq!(
+            hook_specific_output(&out)["permissionDecision"],
+            "allow",
+            "{tool}: {out}"
+        );
+    }
+    for tool in ["Write", "Edit", "Bash"] {
+        let input = serde_json::json!({"tool_name":tool,"tool_input":{"file_path":"/app/.claude/settings.json","command":"echo changed > /app/.claude/settings.json","content":"{}"}});
+        let (out, code) = run_hook(&input.to_string());
+        assert_eq!(code, 0);
+        assert_eq!(
+            hook_specific_output(&out)["permissionDecision"],
+            "ask",
+            "{tool}: {out}"
+        );
+    }
+    let (out, _) = run_hook(
+        r#"{"tool_name":"Bash","tool_input":{"command":"cat /app/.claude/settings.json"}}"#,
+    );
+    assert_eq!(hook_specific_output(&out)["permissionDecision"], "ask");
+}
+
+#[test]
 fn test_hook_denies_credential_write() {
     // block_credential_writes fires — denies writing to .env files.
     let (out, code) = run_hook(
@@ -335,7 +363,7 @@ fn test_hook_denies_claude_task_tools_with_kindex_hint() {
     );
     assert_eq!(code, 0);
     assert_eq!(parse_decision(&out), "deny");
-    assert!(out.contains("Claude Task* tools"));
+    assert!(out.contains("Claude task-state tools"));
     assert!(out.contains("Use Kindex tasks"));
     assert!(out.contains("mcp__kindex__task_add"));
     assert!(out.contains("durability"));

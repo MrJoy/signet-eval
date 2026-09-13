@@ -455,7 +455,7 @@ impl Vault {
         if let Ok(conn) = Connection::open(&self.db_path) {
             let _ = conn.execute(
                 "INSERT INTO ledger (timestamp, tool, category, amount, decision, detail, session_id) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![now_epoch(), tool, category, amount, decision, detail, session_id],
+                params![now_epoch(), crate::redaction::text(tool), crate::redaction::text(category), amount, decision, crate::redaction::diagnostic(detail), session_id],
             );
         }
     }
@@ -592,6 +592,7 @@ impl Vault {
         })
         .unwrap()
         .filter_map(|r| r.ok())
+        .map(|record| crate::redaction::value(&record))
         .collect()
     }
 
@@ -844,6 +845,13 @@ impl Vault {
 
     /// Store a new preflight. HMAC-signs it. Deactivates any previous active preflight.
     pub fn store_preflight(&self, preflight: &Preflight) -> Result<(), String> {
+        let record =
+            serde_json::to_value(preflight).map_err(|_| "Preflight serialization failed")?;
+        // Rewriting a constraint could change its enforcement semantics. Reject before
+        // validation can echo an unsafe constraint name into a diagnostic.
+        if crate::redaction::value(&record) != record {
+            return Err("Preflight contains sensitive values; use non-secret references".into());
+        }
         if preflight.constraints.len() > MAX_PREFLIGHT_CONSTRAINTS {
             return Err(format!(
                 "Too many constraints: {} (max {})",
@@ -1000,7 +1008,7 @@ impl Vault {
         let conn = Connection::open(&self.db_path).map_err(|e| format!("open db: {e}"))?;
         conn.execute(
             "INSERT INTO preflight_violations (preflight_id, constraint_name, tool_name, params_summary, alternative, timestamp) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![violation.preflight_id, violation.constraint_name, violation.tool_name, violation.parameters_summary, violation.alternative, violation.timestamp as i64],
+            params![violation.preflight_id, crate::redaction::text(&violation.constraint_name), crate::redaction::text(&violation.tool_name), crate::redaction::diagnostic(&violation.parameters_summary), crate::redaction::text(&violation.alternative), violation.timestamp as i64],
         ).map_err(|e| format!("insert violation: {e}"))?;
 
         // Increment violation count
@@ -1042,10 +1050,10 @@ impl Vault {
         stmt.query_map(params![preflight_id], |row| {
             Ok(PreflightViolation {
                 preflight_id: row.get(0)?,
-                constraint_name: row.get(1)?,
-                tool_name: row.get(2)?,
-                parameters_summary: row.get(3)?,
-                alternative: row.get(4)?,
+                constraint_name: crate::redaction::text(&row.get::<_, String>(1)?),
+                tool_name: crate::redaction::text(&row.get::<_, String>(2)?),
+                parameters_summary: crate::redaction::diagnostic(&row.get::<_, String>(3)?),
+                alternative: crate::redaction::text(&row.get::<_, String>(4)?),
                 timestamp: row.get::<_, i64>(5)? as u64,
             })
         })
@@ -1094,6 +1102,7 @@ impl Vault {
         })
         .unwrap()
         .filter_map(|r| r.ok())
+        .map(|record| crate::redaction::value(&record))
         .collect()
     }
 
@@ -1526,6 +1535,15 @@ pub fn unlock_vault(passphrase: &str) -> Result<Vault, String> {
 
 /// Try loading vault from cached session key (for hook mode — no passphrase prompt).
 pub fn try_load_vault() -> Option<Vault> {
+    Some(Vault::new(cached_master_key()?, db_path()))
+}
+
+/// Inspect policy signing authority without creating or migrating the vault database.
+pub(crate) fn cached_session_key() -> Option<[u8; KEY_LEN]> {
+    Some(derive_subkey(&cached_master_key()?, "session"))
+}
+
+fn cached_master_key() -> Option<[u8; KEY_LEN]> {
     let key_data = std::fs::read_to_string(session_key_path()).ok()?;
     let encrypted_bytes = B64.decode(key_data.trim()).ok()?;
     let master_key = decrypt_session_key(&encrypted_bytes)?;
@@ -1540,7 +1558,7 @@ pub fn try_load_vault() -> Option<Vault> {
         return None;
     }
 
-    Some(Vault::new(master_key, db_path()))
+    Some(master_key)
 }
 
 #[cfg(test)]
@@ -1741,6 +1759,44 @@ mod tests {
         vault.log_action("read", "ALLOW", "", 0.0, "");
         vault.log_action("write", "DENY", "", 0.0, "blocked");
         assert_eq!(vault.recent_actions(10).len(), 2);
+    }
+
+    #[test]
+    fn diagnostic_sinks_sanitize_before_persistence_without_changing_constraints() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = make_test_vault(dir.path(), "testpass123");
+        let safe = make_preflight("diagnostic-test", None);
+        vault.store_preflight(&safe).unwrap();
+        vault.log_action(
+            "Bash",
+            "DENY",
+            "",
+            0.0,
+            r#"{"headers":{"Cookie":"opaque-log-canary"}}"#,
+        );
+        vault
+            .log_preflight_violation(&PreflightViolation {
+                preflight_id: safe.id.clone(),
+                constraint_name: "safe constraint".into(),
+                tool_name: "Bash".into(),
+                parameters_summary: "🔑password=violation-canary".into(),
+                alternative: "Use the environment".into(),
+                timestamp: now_epoch() as u64,
+            })
+            .unwrap();
+        let mut unsafe_preflight = make_preflight("unsafe-preflight", None);
+        unsafe_preflight.task = "api_key=preflight-canary".into();
+        assert!(vault.store_preflight(&unsafe_preflight).is_err());
+        let bytes = std::fs::read(&vault.db_path).unwrap();
+        let contents = String::from_utf8_lossy(&bytes);
+        for canary in ["opaque-log-canary", "violation-canary", "preflight-canary"] {
+            assert!(!contents.contains(canary), "persisted {canary}");
+        }
+        assert_eq!(vault.active_preflight().unwrap().id, safe.id);
+        assert!(vault.recent_actions(1)[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("[REDACTED]"));
     }
 
     #[test]
