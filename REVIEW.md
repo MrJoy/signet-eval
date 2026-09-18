@@ -6,9 +6,11 @@ when every test is green. Review for fail-closed behaviour first.
 
 ## Always check
 
-- **Fail closed.** Malformed input, a missing policy, a failed vault read, an
-  unreachable binary or an unrecognized host reply must deny or ask, never
-  allow. Hook mode always exits 0 and reports the decision in JSON.
+- **Fail closed.** Malformed input, a failed vault read, an unreachable binary
+  or an unrecognized host reply must deny or ask, never allow. A missing or
+  corrupted `policy.yaml` is the one deliberate exception: it falls back to the
+  compiled `default_policy()` (locked self-protection included), which can
+  allow calls. Hook mode always exits 0 and reports the decision in JSON.
 - **Self-protection.** The locked rules in `self_protection_rules()` stay locked
   and stay ahead of user rules. A change that lets a tool write `.signet/`, the
   binary, hook settings or policy files without the existing checks needs an
