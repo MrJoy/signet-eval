@@ -1013,7 +1013,7 @@ fn resolve_gate(config: &GateConfig, vault: Option<&Vault>) -> bool {
 pub fn load_policy(path: &Path) -> CompiledPolicy {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<PolicyConfig>(&content) {
-            Ok(config) => CompiledPolicy::from_config(&config),
+            Ok(config) => CompiledPolicy::from_config(&overlay_current_system_rules(config)),
             Err(_) => default_policy(),
         },
         Err(_) => default_policy(),
@@ -1111,6 +1111,11 @@ pub fn merge_rules(system_rules: &[PolicyRule], user_rules: &[PolicyRule]) -> Ve
         }
     }
     merged
+}
+
+/// Load reconciled system configuration while preserving file/parse diagnostics.
+pub fn load_effective_policy_config(path: &Path) -> Result<PolicyConfig, String> {
+    load_policy_config(path).map(overlay_current_system_rules)
 }
 
 /// Load raw policy config from file.
@@ -1406,10 +1411,39 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
     diagnostics
 }
 
+/// Validate the stored system policy without diagnosing retired binary-owned rules.
+/// User policy validation deliberately continues to use `validate_policy`.
+pub fn validate_system_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
+    validate_policy(config)
+        .into_iter()
+        .filter(|diagnostic| !RETIRED_BUILT_IN_NAMES.contains(&diagnostic.rule_name.as_str()))
+        .collect()
+}
+
+/// Repair stored system rules without persisting the compiled-default overlay.
+pub fn fix_system_policy(config: &mut PolicyConfig) -> PolicyFix {
+    if !config
+        .rules
+        .iter()
+        .any(|rule| RETIRED_BUILT_IN_NAMES.contains(&rule.name.as_str()))
+    {
+        return fix_policy(config);
+    }
+    let diagnostics = validate_system_policy(config);
+    fix_policy_diagnostics(config, diagnostics)
+}
+
 /// Auto-fix common policy issues. Never modifies locked rules.
 /// Removes broken unlocked rules and clamps out-of-range values.
 pub fn fix_policy(config: &mut PolicyConfig) -> PolicyFix {
     let diagnostics = validate_policy(config);
+    fix_policy_diagnostics(config, diagnostics)
+}
+
+fn fix_policy_diagnostics(
+    config: &mut PolicyConfig,
+    diagnostics: Vec<ValidationDiagnostic>,
+) -> PolicyFix {
     let mut removed = Vec::new();
     let mut modified = Vec::new();
     let mut rules_to_remove: Vec<String> = Vec::new();
