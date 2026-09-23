@@ -182,8 +182,8 @@ acceptance checks with:
 SIGNET_EVAL_BINARY="$(pwd)/target/release/signet-eval" python3 tests/test_pr16_behavior.py
 ```
 
-These standalone Python checks provide local acceptance evidence; hosted CI
-currently runs the Rust suite and packaging checks.
+These Python acceptance checks can run locally and are also collected by hosted
+CI on Linux and macOS against the release binary, alongside Rust and packaging checks.
 
 ## Advisory Injection
 
