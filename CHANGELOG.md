@@ -8,6 +8,9 @@
 ### Changed
 - The function adapter is qualified against Claude Code 2.1.274 instead of 2.1.263. `integration install-modern` now requires 2.1.274, and the adapter revision is `claude-functions-2.1.274-v1`. An installed adapter reports a conflict until the binary and plugin are both upgraded, so rerun `signet-eval integration install-modern` after installing this release.
 
+### Changed
+- `integration install-modern` accepts any Claude Code build from 2.1.274 through 2.1.280 instead of exactly 2.1.274. 2.1.280 only adds function-hook events; the four the adapter registers are unchanged, and the offline host probe (`tests/claude_function_host.py`) passes on 2.1.280. The adapter revision stays `claude-functions-2.1.274-v1` because the adapter itself did not change.
+
 ## [3.12.2] - 2026-08-27
 
 ### Added

@@ -5,7 +5,7 @@ binary. It starts no service. Legacy Claude command hooks, Codex, Antigravity an
 OpenCode remain separate: they do not import this adapter, poll it, or require
 Claude's function API. Removing this directory removes the modern adapter.
 
-The adapter targets the early-access API emitted by Claude Code **2.1.274** with
+The adapter targets the early-access API emitted by Claude Code **2.1.274** through **2.1.280** with
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Other runtime revisions are not qualified.
 The flag also works through `settings.json`'s `env` object in an isolated
 2.1.274 probe; no shell-profile change is required for that activation path.
@@ -32,7 +32,7 @@ adapter with:
 signet-eval integration install-modern
 ```
 
-This checks for the qualified Claude version, installs complete assets under
+This checks for a qualified Claude version (2.1.274 through 2.1.280), installs complete assets under
 `CLAUDE_CONFIG_DIR/skills/signet-eval-functions` (normally `~/.claude/skills`), sets
 the function flag in Claude settings, and configures the adapter with this
 binary's absolute path. It retires only exact recognized Signet Claude command

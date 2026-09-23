@@ -8,10 +8,11 @@ use std::{
 };
 
 const NAME: &str = "signet-eval-functions";
-/// The one Claude Code build the embedded adapter was qualified against. The
-/// function-hook API is early access and renames events between releases, so a
-/// module written for one build can fail to load on the next.
-const QUALIFIED_CLAUDE_VERSION: &str = "2.1.274";
+/// The inclusive range of Claude Code builds the embedded adapter was qualified
+/// against. The function-hook API is early access and renames events between
+/// releases, so a module written for one build can fail to load on the next.
+/// Raise the upper bound only after the host probe passes on the new build.
+const QUALIFIED_CLAUDE_VERSIONS: ((u32, u32, u32), (u32, u32, u32)) = ((2, 1, 274), (2, 1, 280));
 const ASSETS: [(&str, &str); 3] = [
     (
         ".claude-plugin/plugin.json",
@@ -26,6 +27,21 @@ const ASSETS: [(&str, &str); 3] = [
         include_str!("../adapters/claude-function/hooks/signet.ts"),
     ),
 ];
+
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split('.').map(|part| part.parse::<u32>().ok());
+    let version = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(version)
+}
+
+fn qualified_claude_version(stdout: &str) -> bool {
+    let (lowest, highest) = QUALIFIED_CLAUDE_VERSIONS;
+    stdout
+        .split_whitespace()
+        .next()
+        .and_then(parse_version)
+        .is_some_and(|version| (lowest..=highest).contains(&version))
+}
 
 fn no_links(path: &Path) -> Result<(), &'static str> {
     for ancestor in path.ancestors() {
@@ -128,10 +144,7 @@ pub fn install_modern() -> Result<Value, &'static str> {
         .output()
         .map_err(|_| "claude_unavailable")?;
     if !version.status.success()
-        || String::from_utf8_lossy(&version.stdout)
-            .split_whitespace()
-            .next()
-            != Some(QUALIFIED_CLAUDE_VERSION)
+        || !qualified_claude_version(&String::from_utf8_lossy(&version.stdout))
     {
         return Err("unqualified_claude_version_use_legacy");
     }
