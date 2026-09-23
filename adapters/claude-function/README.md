@@ -31,8 +31,8 @@ TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" \
 SIGNET_EVAL_BINARY="$(pwd)/target/release/signet-eval" python3 tests/test_pr15_behavior.py
 ```
 
-These standalone Python checks provide local acceptance evidence; hosted CI
-currently runs the Rust suite and packaging checks. On macOS, the canonical physical
+These Python acceptance checks can run locally and are also collected by hosted
+CI on Linux and macOS against the release binary, alongside Rust and packaging checks. On macOS, the canonical physical
 `TMPDIR` avoids the installer's intentional symlink-path refusal.
 The flag also works through `settings.json`'s `env` object in an isolated
 2.1.274 probe; no shell-profile change is required for that activation path.
