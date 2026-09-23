@@ -5,8 +5,35 @@ binary. It starts no service. Legacy Claude command hooks, Codex, Antigravity an
 OpenCode remain separate: they do not import this adapter, poll it, or require
 Claude's function API. Removing this directory removes the modern adapter.
 
-The adapter targets the early-access API emitted by Claude Code **2.1.274** through **2.1.280** with
-`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Other runtime revisions are not qualified.
+The adapter targets the early-access API emitted by Claude Code **2.1.274** and **2.1.280** with
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. The installer accepts only these exact builds, not intermediate versions.
+Both exact builds passed real-host qualification on **2026-09-23**, using isolated
+configuration and a synthetic local provider. This covered installed-plugin
+behavior, Kindex coexistence with native-task denial preventing durable task
+mutation, and plugin validation. Builds **2.1.275–2.1.279** were not qualified;
+this is not a supported range or a production-provider validation.
+
+To reproduce, select each exact Claude executable in turn and run:
+
+```bash
+claude plugin validate adapters/claude-function
+python3 tests/claude_function_host.py --installed-plugin
+python3 tests/claude_function_host.py --kindex-plugin /path/to/kindex/src/kindex/claude_modern --deny-native-secret
+```
+
+Installer version-probe mocks establish parsing only, not host compatibility.
+
+From the repository root after `cargo build --release`, run the independent local
+acceptance checks with:
+
+```bash
+TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" \
+SIGNET_EVAL_BINARY="$(pwd)/target/release/signet-eval" python3 tests/test_pr15_behavior.py
+```
+
+These standalone Python checks provide local acceptance evidence; hosted CI
+currently runs the Rust suite and packaging checks. On macOS, the canonical physical
+`TMPDIR` avoids the installer's intentional symlink-path refusal.
 The flag also works through `settings.json`'s `env` object in an isolated
 2.1.274 probe; no shell-profile change is required for that activation path.
 Settings-hook events are named under `classic.` in this API (`classic.PreToolUse`);
@@ -32,7 +59,7 @@ adapter with:
 signet-eval integration install-modern
 ```
 
-This checks for a qualified Claude version (2.1.274 through 2.1.280), installs complete assets under
+This checks for a selected Claude version (exactly 2.1.274 or 2.1.280), installs complete assets under
 `CLAUDE_CONFIG_DIR/skills/signet-eval-functions` (normally `~/.claude/skills`), sets
 the function flag in Claude settings, and configures the adapter with this
 binary's absolute path. It retires only exact recognized Signet Claude command
@@ -40,6 +67,14 @@ handlers, retaining foreign handlers in shared groups. Unknown Signet wrappers,
 malformed settings and linked/unowned installation targets require manual review.
 Existing settings and previous plugin files are retained under the Claude config
 directory's `signet-adapter-backups`; restore both to roll back. Restart Claude.
+
+After upgrading the binary, rerun `signet-eval integration install-modern` and
+restart Claude. A mismatched installed adapter/binary revision denies affected
+calls and withholds results; upgrading only one side is not a completed migration.
+
+For unsupported Claude versions, retain the legacy integration or select exactly
+2.1.274 or 2.1.280 before choosing the optional adapter. A version refusal performs
+no automatic cleanup or migration of existing settings or plugin files.
 
 Installing the adapter does **not** enable enforcement: global/session disabled
 state is preserved. When globally disabled, the installed plugin is neutral.

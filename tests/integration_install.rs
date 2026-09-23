@@ -105,16 +105,25 @@ fn installer_refuses_unqualified_claude_without_changing_settings() {
 }
 
 #[test]
-fn installer_accepts_every_build_in_the_qualified_range() {
-    for version in ["2.1.274", "2.1.277", "2.1.280"] {
+fn installer_accepts_exact_qualified_builds() {
+    for version in ["2.1.274", "2.1.280"] {
         let dir = fixture_with_claude(version);
         assert_eq!(install(dir.path())["status"], "installed", "{version}");
     }
 }
 
 #[test]
-fn installer_refuses_builds_outside_the_qualified_range() {
-    for version in ["2.1.273", "2.1.281", "2.2.0", "2.1.280-beta", "2.1"] {
+fn installer_refuses_unqualified_builds() {
+    for version in [
+        "2.1.273",
+        "2.1.275",
+        "2.1.277",
+        "2.1.279",
+        "2.1.281",
+        "2.2.0",
+        "2.1.280-beta",
+        "2.1",
+    ] {
         let dir = fixture_with_claude(version);
         assert_eq!(
             install(dir.path())["error"],

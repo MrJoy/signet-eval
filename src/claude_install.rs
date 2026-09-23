@@ -8,11 +8,9 @@ use std::{
 };
 
 const NAME: &str = "signet-eval-functions";
-/// The inclusive range of Claude Code builds the embedded adapter was qualified
-/// against. The function-hook API is early access and renames events between
-/// releases, so a module written for one build can fail to load on the next.
-/// Raise the upper bound only after the host probe passes on the new build.
-const QUALIFIED_CLAUDE_VERSIONS: ((u32, u32, u32), (u32, u32, u32)) = ((2, 1, 274), (2, 1, 280));
+/// Exact builds qualified on 2026-09-23 with isolated hosts and a synthetic provider.
+/// Intermediate early-access builds are not implicitly compatible.
+const QUALIFIED_CLAUDE_VERSIONS: &[(u32, u32, u32)] = &[(2, 1, 274), (2, 1, 280)];
 const ASSETS: [(&str, &str); 3] = [
     (
         ".claude-plugin/plugin.json",
@@ -35,12 +33,11 @@ fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
 }
 
 fn qualified_claude_version(stdout: &str) -> bool {
-    let (lowest, highest) = QUALIFIED_CLAUDE_VERSIONS;
     stdout
         .split_whitespace()
         .next()
         .and_then(parse_version)
-        .is_some_and(|version| (lowest..=highest).contains(&version))
+        .is_some_and(|version| QUALIFIED_CLAUDE_VERSIONS.contains(&version))
 }
 
 fn no_links(path: &Path) -> Result<(), &'static str> {
