@@ -732,10 +732,6 @@ fn emit_deny(adapter: HookAdapter, event: HookEvent, reason: &str) {
 /// For unlocked rules, missing scripts resolve gracefully (allow).
 /// For locked rules, missing scripts fail closed (deny).
 fn resolve_ensure(config: &EnsureConfig, locked: bool, call: &ToolCall) -> (bool, String) {
-    if let Err(error) = crate::embedded_checks::install_if_builtin(&config.check) {
-        return (false, error);
-    }
-
     let script_path = match policy::resolve_ensure_script_path(&config.check) {
         Ok(p) => p,
         Err(e) => {
@@ -780,19 +776,6 @@ fn resolve_ensure(config: &EnsureConfig, locked: bool, call: &ToolCall) -> (bool
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if config.check == crate::embedded_checks::GITHUB_IDENTITY_CHECK {
-        if let Some(command_text) = call.parameters.get("command").and_then(|v| v.as_str()) {
-            command.env("SIGNET_TOOL_COMMAND", command_text);
-        }
-        if let Some(call_cwd) = call
-            .parameters
-            .get("workdir")
-            .or_else(|| call.parameters.get("cwd"))
-            .and_then(|v| v.as_str())
-        {
-            command.env("SIGNET_TOOL_CWD", call_cwd);
-        }
-    }
 
     let mut child = match command.spawn() {
         Ok(c) => c,

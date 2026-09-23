@@ -1,5 +1,4 @@
 mod claude_install;
-mod embedded_checks;
 mod hook;
 mod integration;
 mod policy;
