@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- Hook-mode tool calls expose the issuing model as `agent_model`, so rules can restrict tools by model (for example `not(matches(agent_model, '^claude-opus-'))`). The value comes from the host's `model` field or the newest model in the tail of the session transcript, preferring a subagent's own transcript. A lookalike `agent_model` in tool input is discarded. Unknown models leave the field absent, so negated allowlists fail closed.
+- Hook-mode tool calls expose the issuing model as `agent_model`, so rules can restrict tools by model (for example `not(matches(agent_model, '^claude-opus-'))`). The value comes from the host's `model` / `modelName` field, or from the transcript entry that issued the call, matched by `tool_use_id`. Subagent calls read the subagent's own transcript. Resolution only runs for calls that a model-scoped rule could match, and it waits up to 5s for Claude Code to flush the entry. A lookalike `agent_model` in tool input is discarded. Unknown models leave the field absent, so negated allowlists fail closed.
 
 ## [3.13.0] - 2026-09-24
 

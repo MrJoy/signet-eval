@@ -228,13 +228,23 @@ and `{matched_param.X}`. See `examples/inject_examples.yaml`.
 
 ### Model-scoped rules
 
-Hook-mode calls carry an `agent_model` field naming the model that issued the
-tool call. Signet takes it from the host's `model` field when present, and
-otherwise from the newest model recorded in the last 256 KiB of the session
-transcript (`agent_transcript_path` for subagents, then `transcript_path`).
-Claude Code assistant entries and Codex `turn_context` entries are recognized.
-Any `agent_model` in the tool input itself is discarded, so the agent cannot
-claim a different model.
+Hook-mode calls can carry an `agent_model` field naming the model that issued
+the tool call. Signet resolves it in this order:
+
+1. An explicit host field: `model` (string, or object with `id`) or
+   Antigravity's `modelName`.
+2. The transcript entry that issued this exact call, matched by `tool_use_id`.
+   Claude Code's PreToolUse input has no model field, and it appends the
+   issuing entry 0.4–2s after the hook fires, so Signet polls for up to 5s.
+   Subagent calls (`agent_id`) read the subagent's own transcript, so a Haiku
+   subagent under an Opus session is seen as Haiku. Codex rollouts resolve
+   through the `turn_context` preceding the matching `function_call`.
+3. With no call id, the newest model in the last 1 MiB of the transcript.
+
+Resolution only happens for calls that a rule naming `agent_model` could
+match: its tool pattern and all of its other conditions must already hold.
+Other calls pay nothing. Any `agent_model` in the tool input itself is
+discarded, so the agent cannot claim a different model.
 
 When no model can be determined the field is absent and compares as an empty
 string. Write the condition as a negated allowlist so unknown models fail
@@ -252,7 +262,9 @@ closed:
 ```
 
 Command matching stays substring-based, so an agent determined to reach the
-same binary through an interpreter or wrapper script can still evade it.
+same binary through an interpreter or wrapper script can still evade it. An
+agent that can write its own transcript can also plant entries, so pair
+model-scoped rules with a rule that denies writes under `~/.claude/projects/`.
 
 ## Encrypted Vault
 

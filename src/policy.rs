@@ -221,6 +221,24 @@ pub struct CompiledPolicy {
     pub has_inject_rules: bool,
 }
 
+impl CompiledPolicy {
+    /// True when some rule reads `field` and every other condition of that
+    /// rule already holds for `call`. Conditions are AND'd, so a rule failing
+    /// elsewhere cannot match whatever `field` turns out to be. Lets hook mode
+    /// skip costly parameter enrichment that could not change the outcome.
+    pub fn needs_param(&self, field: &str, call: &ToolCall, vault: Option<&Vault>) -> bool {
+        self.rules.iter().any(|rule| {
+            rule.tool_regex.is_match(&call.tool_name)
+                && rule.conditions.iter().any(|cond| cond.contains(field))
+                && rule
+                    .conditions
+                    .iter()
+                    .filter(|cond| !cond.contains(field))
+                    .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
+        })
+    }
+}
+
 pub struct EvaluationResult {
     pub decision: Decision,
     pub matched_rule: Option<String>,
