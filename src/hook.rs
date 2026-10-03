@@ -310,20 +310,22 @@ fn read_transcript_tail(path: &std::path::Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     let start = len.saturating_sub(TRANSCRIPT_TAIL_BYTES);
-    file.seek(SeekFrom::Start(start)).ok()?;
+    // Read one byte before the window so a line beginning exactly at the
+    // boundary can be told apart from the tail of a longer, cut-off line.
+    let lookback = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(lookback)).ok()?;
     let mut tail = Vec::new();
-    file.take(TRANSCRIPT_TAIL_BYTES)
-        .read_to_end(&mut tail)
-        .ok()?;
-    let tail = String::from_utf8_lossy(&tail);
+    file.take(len - lookback).read_to_end(&mut tail).ok()?;
 
-    // When reading mid-file the first line is almost certainly partial.
-    let skip = if start > 0 {
-        tail.find('\n').map_or(tail.len(), |i| i + 1)
-    } else {
+    let skip = if start == 0 {
         0
+    } else {
+        // Drop the lookback byte, plus the partial line when one was cut.
+        tail.iter()
+            .position(|&b| b == b'\n')
+            .map_or(tail.len(), |i| i + 1)
     };
-    Some(tail[skip..].to_owned())
+    Some(String::from_utf8_lossy(&tail[skip..]).into_owned())
 }
 
 /// A usable model name, rejecting blanks and placeholders such as `<synthetic>`.
@@ -1362,6 +1364,31 @@ rules:
             "transcript_path": transcript
         }));
         assert_eq!(model.as_deref(), Some("claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn transcript_tail_keeps_a_line_starting_exactly_at_the_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let last = assistant("claude-sonnet-5-5", None).to_string();
+        let window = TRANSCRIPT_TAIL_BYTES as usize;
+
+        // The window begins exactly at the start of `last`: it holds `last`
+        // plus a filler line, preceded by an earlier complete line.
+        let filler = format!("{}\n", "#".repeat(window - last.len() - 2));
+        std::fs::write(&path, format!("{{}}\n{last}\n{filler}")).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len() - TRANSCRIPT_TAIL_BYTES,
+            3
+        );
+        let tail = read_transcript_tail(&path).unwrap();
+        assert!(tail.lines().any(|line| line == last));
+
+        // The window begins one byte into a line: that fragment is dropped.
+        std::fs::write(&path, format!("{}\n{last}\n", "#".repeat(window + 1))).unwrap();
+        let tail = read_transcript_tail(&path).unwrap();
+        assert!(!tail.contains('#'));
+        assert!(tail.lines().any(|line| line == last));
     }
 
     #[test]
