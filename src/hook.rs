@@ -203,9 +203,87 @@ pub(crate) fn parse_tool_call_input(
     raw_input: Value,
     adapter: HookAdapter,
 ) -> Result<ToolCall, String> {
+    let agent_model = resolve_agent_model(&raw_input);
     let hook_input: HookInput =
         serde_json::from_value(raw_input).map_err(|_| "Malformed hook input".to_string())?;
-    hook_input.into_tool_call(adapter)
+    let mut call = hook_input.into_tool_call(adapter)?;
+
+    // The host envelope is authoritative for model identity. Drop any lookalike
+    // field from tool input so the agent cannot spoof the model a rule sees.
+    if let Value::Object(parameters) = &mut call.parameters {
+        parameters.remove(AGENT_MODEL_FIELD);
+        if let Some(model) = agent_model {
+            parameters.insert(AGENT_MODEL_FIELD.into(), Value::String(model));
+        }
+    }
+    Ok(call)
+}
+
+/// Parameter field exposing the active model to policy conditions,
+/// e.g. `not(matches(agent_model, '^claude-opus-'))`.
+pub(crate) const AGENT_MODEL_FIELD: &str = "agent_model";
+
+/// Bytes read from the end of a transcript when looking for the active model.
+const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Identify the model driving this tool call. Prefers an explicit `model`
+/// field in the hook envelope, then the most recent model recorded in the
+/// session transcript (the subagent's own transcript when the host names one).
+fn resolve_agent_model(raw_input: &Value) -> Option<String> {
+    let explicit = match raw_input.get("model") {
+        Some(Value::String(model)) => Some(model.as_str()),
+        Some(Value::Object(model)) => model.get("id").and_then(Value::as_str),
+        _ => None,
+    };
+    if let Some(model) = explicit.map(str::trim).filter(|m| !m.is_empty()) {
+        return Some(model.to_owned());
+    }
+
+    [
+        "agent_transcript_path",
+        "agentTranscriptPath",
+        "transcript_path",
+        "transcriptPath",
+    ]
+    .iter()
+    .find_map(|key| string_field(raw_input, key))
+    .and_then(|path| last_transcript_model(std::path::Path::new(&path)))
+}
+
+/// Scan the tail of a JSONL transcript for the newest model identifier.
+/// Understands Claude Code assistant entries (`message.model`) and Codex
+/// `turn_context` entries (`payload.model`). Synthetic placeholders such as
+/// `<synthetic>` are skipped.
+fn last_transcript_model(path: &std::path::Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TRANSCRIPT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::new();
+    file.take(TRANSCRIPT_TAIL_BYTES)
+        .read_to_end(&mut tail)
+        .ok()?;
+    let tail = String::from_utf8_lossy(&tail);
+
+    // When reading mid-file the first line is almost certainly partial.
+    let lines = tail.lines().skip(usize::from(start > 0));
+    lines
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find_map(|line| {
+            let entry: Value = serde_json::from_str(line).ok()?;
+            let model = match entry.get("type").and_then(Value::as_str) {
+                Some("assistant") => entry.get("message")?.get("model"),
+                Some("turn_context") => entry.get("payload")?.get("model"),
+                _ => None,
+            }?
+            .as_str()?
+            .trim();
+            (!model.is_empty() && !model.starts_with('<')).then(|| model.to_owned())
+        })
 }
 
 fn copy_argument(map: &mut Map<String, Value>, source: &str, target: &str) {
@@ -933,5 +1011,175 @@ mod tests {
         assert_eq!(call.parameters["mcp_server_name"], "danger");
         assert_eq!(call.parameters["mcp_tool_name"], "delete");
         assert!(call.parameters.get("Arguments").is_none());
+    }
+
+    fn parse_claude(input: Value) -> ToolCall {
+        parse_tool_call_input(input, HookAdapter::Claude).unwrap()
+    }
+
+    fn write_transcript(lines: &[Value]) -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+        file
+    }
+
+    #[test]
+    fn agent_model_prefers_explicit_envelope_field() {
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "gcloud auth list"},
+            "model": "claude-opus-5-5"
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-opus-5-5");
+
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "model": {"id": "claude-sonnet-5-5", "display_name": "Sonnet"}
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn agent_model_falls_back_to_newest_transcript_entry() {
+        let transcript = write_transcript(&[
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-haiku-4-5-20251001"}}),
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-opus-5-5"}}),
+            serde_json::json!({"type": "assistant", "message": {"model": "<synthetic>"}}),
+            serde_json::json!({"type": "user", "message": {"content": "hi"}}),
+        ]);
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "transcript_path": transcript.path()
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-opus-5-5");
+    }
+
+    #[test]
+    fn agent_model_prefers_subagent_transcript() {
+        let parent = write_transcript(&[
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-opus-5-5"}}),
+        ]);
+        let subagent = write_transcript(&[
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-haiku-4-5-20251001"}}),
+        ]);
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "transcript_path": parent.path(),
+            "agent_transcript_path": subagent.path()
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn agent_model_reads_codex_turn_context() {
+        let transcript = write_transcript(&[
+            serde_json::json!({"type": "turn_context", "payload": {"model": "gpt-5.5-codex"}}),
+            serde_json::json!({"type": "response_item", "payload": {"type": "message"}}),
+        ]);
+        let call = parse_tool_call_input(
+            serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "transcript_path": transcript.path()
+            }),
+            HookAdapter::Codex,
+        )
+        .unwrap();
+        assert_eq!(call.parameters["agent_model"], "gpt-5.5-codex");
+    }
+
+    #[test]
+    fn agent_model_tail_scan_skips_partial_leading_line() {
+        let filler = "x".repeat(TRANSCRIPT_TAIL_BYTES as usize);
+        let transcript = write_transcript(&[
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-opus-5-5"}, "pad": filler}),
+            serde_json::json!({"type": "assistant", "message": {"model": "claude-sonnet-5-5"}}),
+        ]);
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "transcript_path": transcript.path()
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn agent_model_cannot_be_spoofed_through_tool_input() {
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "gcloud sql connect", "agent_model": "claude-opus-5-5"}
+        }));
+        assert!(call.parameters.get("agent_model").is_none());
+
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls", "agent_model": "claude-opus-5-5"},
+            "model": "claude-haiku-4-5-20251001"
+        }));
+        assert_eq!(call.parameters["agent_model"], "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn agent_model_unreadable_transcript_leaves_field_absent() {
+        let call = parse_claude(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "transcript_path": "/nonexistent/signet-agent-model.jsonl"
+        }));
+        assert!(call.parameters.get("agent_model").is_none());
+    }
+
+    #[test]
+    fn agent_model_gates_cloud_tools_and_fails_closed_when_unknown() {
+        let config: policy::PolicyConfig = serde_yaml::from_str(
+            r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: cloud_tools_require_opus
+    tool_pattern: "^Bash$"
+    conditions:
+      - "matches(command, '(^|[;&|(\\s])(gcloud|cloud-sql-proxy)(\\s|$)')"
+      - "not(matches(agent_model, '^claude-opus-'))"
+    action: DENY
+    reason: "gcloud/cloud-sql-proxy restricted to Opus"
+"#,
+        )
+        .unwrap();
+        let compiled = CompiledPolicy::from_config(&config);
+        let decide =
+            |input: Value| policy::evaluate(&parse_claude(input), &compiled, None).decision;
+
+        let gcloud = |model: Option<&str>| {
+            let mut input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "gcloud sql instances list"}
+            });
+            if let Some(model) = model {
+                input["model"] = Value::String(model.into());
+            }
+            input
+        };
+        assert_eq!(decide(gcloud(Some("claude-opus-5-5"))), Decision::Allow);
+        assert_eq!(
+            decide(gcloud(Some("claude-haiku-4-5-20251001"))),
+            Decision::Deny
+        );
+        assert_eq!(decide(gcloud(None)), Decision::Deny);
+        assert_eq!(
+            decide(serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "model": "claude-haiku-4-5-20251001"
+            })),
+            Decision::Allow
+        );
     }
 }

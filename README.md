@@ -226,6 +226,34 @@ and `{matched_param.X}`. See `examples/inject_examples.yaml`.
 | `has_current_session()` | Hook host supplied a distinct chat/session identifier | `has_current_session()` |
 | `true` / `false` | Literal | `true` |
 
+### Model-scoped rules
+
+Hook-mode calls carry an `agent_model` field naming the model that issued the
+tool call. Signet takes it from the host's `model` field when present, and
+otherwise from the newest model recorded in the last 256 KiB of the session
+transcript (`agent_transcript_path` for subagents, then `transcript_path`).
+Claude Code assistant entries and Codex `turn_context` entries are recognized.
+Any `agent_model` in the tool input itself is discarded, so the agent cannot
+claim a different model.
+
+When no model can be determined the field is absent and compares as an empty
+string. Write the condition as a negated allowlist so unknown models fail
+closed:
+
+```yaml
+- name: cloud_tools_require_opus
+  tool_pattern: "^Bash$"
+  conditions:
+    - "matches(command, '(^|[;&|(\\s])(gcloud|cloud-sql-proxy)(\\s|$)')"
+    - "not(matches(agent_model, '^claude-(opus|fable)-'))"
+  action: DENY
+  locked: true
+  reason: "gcloud and cloud-sql-proxy are limited to Opus and Fable"
+```
+
+Command matching stays substring-based, so an agent determined to reach the
+same binary through an interpreter or wrapper script can still evade it.
+
 ## Encrypted Vault
 
 Three-tier encrypted storage with passphrase-derived key hierarchy (Argon2id + AES-256-GCM):
