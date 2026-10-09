@@ -486,18 +486,18 @@ fn handle_remove_rule(args: &serde_json::Map<String, Value>) -> String {
     let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
     // Check if it's a locked system rule
     let system_config = load_policy_effective();
+    let mut user_rules = load_rules_raw();
     if let Some(rule) = system_config.rules.iter().find(|r| r.name == name) {
         if rule.locked {
             return format!("Cannot remove rule '{name}': rule is locked (self-protection).");
         }
-        if !rule.locked {
+        if !user_rules.iter().any(|r| r.name == name) {
             return format!(
                 "Cannot remove system rule '{name}'. Add an overriding rule in user rules instead."
             );
         }
     }
     // Remove from user rules
-    let mut user_rules = load_rules_raw();
     let before = user_rules.len();
     user_rules.retain(|r| r.name != name);
     if user_rules.len() == before {
@@ -769,7 +769,11 @@ fn handle_reorder_rule(args: &serde_json::Map<String, Value>) -> String {
     {
         return format!("Cannot reorder rule '{name}': rule is locked (self-protection).");
     }
-    if system_config.rules.iter().any(|r| r.name == name) {
+    // A user rule sharing an unlocked system name is the one in force, so it
+    // stays manageable here.
+    if system_config.rules.iter().any(|r| r.name == name)
+        && !load_rules_raw().iter().any(|r| r.name == name)
+    {
         return format!("Cannot reorder system rule '{name}'. Only user rules can be reordered.");
     }
 
@@ -803,7 +807,11 @@ fn handle_edit_rule(args: &serde_json::Map<String, Value>) -> String {
     {
         return format!("Cannot edit rule '{name}': rule is locked (self-protection).");
     }
-    if system_config.rules.iter().any(|r| r.name == name) {
+    // A user rule sharing an unlocked system name is the one in force, so it
+    // stays manageable here.
+    if system_config.rules.iter().any(|r| r.name == name)
+        && !load_rules_raw().iter().any(|r| r.name == name)
+    {
         return format!("Cannot edit system rule '{name}'. Add an overriding user rule instead.");
     }
 

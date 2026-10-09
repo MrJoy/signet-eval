@@ -711,8 +711,8 @@ rules:
 
 #[test]
 fn test_hook_ensure_missing_script() {
-    // Unlocked ensure rule with missing script → allow gracefully.
-    // (Locked ensure with missing script would deny — tested via self-protection.)
+    // An operator-authored ensure rule whose script is absent cannot be
+    // evaluated, so it denies and says why instead of allowing silently.
     let dir = tempfile::tempdir().unwrap();
     let checks_dir = dir.path().join("checks");
     std::fs::create_dir_all(&checks_dir).unwrap();
@@ -740,7 +740,39 @@ rules:
         dir.path(),
     );
     assert_eq!(code, 0);
-    assert_eq!(parse_decision(&out), "allow");
+    assert_eq!(parse_decision(&out), "deny");
+    assert!(out.contains("Script missing"), "{out}");
+    assert!(out.contains("nonexistent-script"), "{out}");
+}
+
+#[test]
+fn test_hook_ensure_missing_checks_dir_denies() {
+    // No checks directory at all, as on a machine where rules.yaml was synced
+    // without ~/.signet/checks/.
+    let dir = tempfile::tempdir().unwrap();
+
+    let policy = r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: ensure_test
+    tool_pattern: "^Bash$"
+    conditions:
+      - "contains(parameters, 'push')"
+    action: ENSURE
+    ensure:
+      check: identity-check
+      timeout: 5
+"#;
+
+    let (out, code) = run_hook_with_policy(
+        r#"{"tool_name":"Bash","tool_input":{"command":"git push"}}"#,
+        policy,
+        dir.path(),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(parse_decision(&out), "deny");
+    assert!(out.contains("identity-check"), "{out}");
 }
 
 #[test]

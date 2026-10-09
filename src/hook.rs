@@ -733,40 +733,25 @@ fn emit_deny(adapter: HookAdapter, event: HookEvent, reason: &str) {
 }
 
 /// Run an ensure check script and return (passed, stderr_output).
-/// For unlocked rules, missing scripts resolve gracefully (allow).
-/// For locked rules, missing scripts fail closed (deny).
-fn resolve_ensure(config: &EnsureConfig, locked: bool, call: &ToolCall) -> (bool, String) {
-    resolve_ensure_with_cwd(config, locked, call, None)
-}
-
-fn resolve_ensure_with_cwd(
+///
+/// A missing or unresolvable check fails closed for every rule. The binary
+/// installs no checks, so an absent script means the operator's rule cannot be
+/// evaluated, which is not the same as the check passing.
+fn resolve_ensure(
     config: &EnsureConfig,
-    locked: bool,
     call: &ToolCall,
     envelope_cwd: Option<&str>,
 ) -> (bool, String) {
     let script_path = match policy::resolve_ensure_script_path(&config.check) {
         Ok(p) => p,
-        Err(e) => {
-            if locked {
-                return (false, e);
-            } else {
-                // Unlocked ensure: script not installed yet, allow gracefully
-                return (true, String::new());
-            }
-        }
+        Err(e) => return (false, format!("Check script unavailable: {e}")),
     };
 
     if !script_path.exists() {
-        if locked {
-            return (
-                false,
-                format!("Check script not found: {}", script_path.display()),
-            );
-        } else {
-            // Unlocked ensure: script not installed yet, allow gracefully
-            return (true, String::new());
-        }
+        return (
+            false,
+            format!("Check script not found: {}", script_path.display()),
+        );
     }
 
     let timeout_secs = config.timeout.max(1).min(30) as u64;
@@ -791,22 +776,27 @@ fn resolve_ensure_with_cwd(
         .or_else(|| call.parameters.get("cmd"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    let tool_cwd = call
-        .parameters
-        .get("cwd")
-        .or_else(|| call.parameters.get("workdir"))
-        .and_then(Value::as_str)
-        .or(envelope_cwd)
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
+    let requested_cwd = ["cwd", "workdir"]
+        .iter()
+        .filter_map(|key| call.parameters.get(*key).and_then(Value::as_str))
+        .find(|cwd| !cwd.is_empty());
+    let host_cwd = envelope_cwd.filter(|cwd| !cwd.is_empty());
+    let (tool_cwd, cwd_source) = match (requested_cwd, host_cwd) {
+        (Some(cwd), _) => (cwd.to_owned(), "tool_input"),
+        (None, Some(cwd)) => (cwd.to_owned(), "host"),
+        (None, None) => (
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
+                .unwrap_or_default(),
+            "process",
+        ),
+    };
     let mut command = Command::new(&script_path);
     command
         .env("SIGNET_TOOL_COMMAND", tool_command)
         .env("SIGNET_TOOL_CWD", tool_cwd)
+        .env("SIGNET_TOOL_CWD_SOURCE", cwd_source)
+        .env("SIGNET_HOST_CWD", host_cwd.unwrap_or(""))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -863,12 +853,7 @@ pub(crate) fn resolve_ensure_result_with_cwd(
     envelope_cwd: Option<&str>,
 ) -> EvaluationResult {
     if let Some(ref ensure_config) = result.ensure_config {
-        let (passed, stderr) = match envelope_cwd {
-            Some(cwd) => {
-                resolve_ensure_with_cwd(ensure_config, result.matched_locked, call, Some(cwd))
-            }
-            None => resolve_ensure(ensure_config, result.matched_locked, call),
-        };
+        let (passed, stderr) = resolve_ensure(ensure_config, call, envelope_cwd);
         if passed {
             EvaluationResult {
                 decision: Decision::Allow,

@@ -140,7 +140,9 @@ class MCPBehavior(unittest.TestCase):
         self.assertIn('retained_system_rule', listed)
         self.assertNotIn('github_identity_guard', listed)
         diag = self.call(c, 'signet_validate', {'fix': False})
-        self.assertNotIn('github_identity_guard', diag)
+        retired = [l for l in diag.splitlines() if 'github_identity_guard' in l]
+        self.assertTrue(retired, 'retired system entry not reported')
+        self.assertTrue(all('ignored' in l.lower() for l in retired), retired)
         self.assertNotIn('gh-identity', diag.lower())
         self.assertEqual(self.read(self.pol), orig, 'read-only calls mutated policy')
         out = self.call(c, 'signet_set_limit', {'category': 'books', 'max_amount': 12})
@@ -161,6 +163,29 @@ class MCPBehavior(unittest.TestCase):
             for f in dirs + files:
                 self.assertNotIn('gh-identity', f)
                 self.assertNotIn('github_identity', f)
+        self.assertIsNone(c.p.poll())
+
+    def test_user_rule_sharing_system_name_stays_manageable(self):
+        self.write_policy([BLOCK])
+        shadow = {'name': 'block_rm', 'tool_pattern': '^UserShadow$', 'conditions': ['true'],
+                  'action': 'ASK', 'reason': 'user-shadow'}
+        other = {'name': 'user_other', 'tool_pattern': '^Other$', 'conditions': ['true'], 'action': 'ASK'}
+        with open(self.rules, 'w') as f:
+            json.dump([other, shadow], f)
+        c = self.start()
+        edited = self.call(c, 'signet_edit_rule', {'name': 'block_rm', 'reason': 'user-shadow-edited'})
+        self.assertNotIn('Cannot edit', edited)
+        self.assertIn('user-shadow-edited', self.read(self.rules))
+        moved = self.call(c, 'signet_reorder_rule', {'name': 'block_rm', 'position': 1})
+        self.assertNotIn('Cannot reorder', moved)
+        rules = self.read(self.rules)
+        self.assertLess(rules.index('block_rm'), rules.index('user_other'))
+        removed = self.call(c, 'signet_remove_rule', {'name': 'block_rm'})
+        self.assertNotIn('Cannot remove', removed)
+        self.assertNotIn('block_rm', self.read(self.rules))
+        refused = self.call(c, 'signet_edit_rule', {'name': 'block_rm', 'reason': 'x'})
+        self.assertIn('Cannot edit system rule', refused)
+        self.assertIn('original-snapshot-marker', self.read(self.pol))
         self.assertIsNone(c.p.poll())
 
 

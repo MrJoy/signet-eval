@@ -169,17 +169,30 @@ literal environment value; it is empty for noncommand tools without those fields
 The forwarding mechanism does not interpret that value as shell code.
 
 `SIGNET_TOOL_CWD` uses the normalized tool `cwd`/`workdir`, then the host envelope's
-`cwd`, then the hook process's working directory. The process fallback is not an
-independently verified execution directory. These values describe supplied call
-context, not a trusted location attestation: missing, malformed, or empty context
-must not be treated by a check as proof of where the requested command will run.
-Both environment values replace inherited values; stdin remains unchanged.
+`cwd`, then the hook process's working directory. Empty values are skipped.
+`SIGNET_TOOL_CWD_SOURCE` says which one was used: `tool_input`, `host`, or `process`.
+`SIGNET_HOST_CWD` carries the host envelope's `cwd` on its own, or is empty when the
+host sent none. A `tool_input` directory is where the host will run the command, but
+the model wrote it. The process fallback is not an independently verified execution
+directory. None of these is a trusted location attestation, and a check that
+authorizes on location should look at the source before relying on the value.
+Signet does not interpret the command, so a `cd` inside it does not change
+`SIGNET_TOOL_CWD`. All of these environment values replace inherited ones, and stdin
+remains unchanged.
+
+A missing or unresolvable check script denies the call with a reason naming the
+check, for user rules as well as locked ones. Signet installs no check scripts, so
+copy `~/.signet/checks/` along with any `rules.yaml` that refers to it.
+
+Older releases shipped a `github_identity_guard` system rule. A copy of it left in
+`policy.yaml` is ignored, and `signet-eval validate` reports it as a warning. To keep
+an identity check, put the rule in `rules.yaml` with a script you maintain.
 
 From the repository root after `cargo build --release`, run the independent local
 acceptance checks with:
 
 ```bash
-SIGNET_EVAL_BINARY="$(pwd)/target/release/signet-eval" python3 tests/test_pr16_behavior.py
+SIGNET_EVAL_BINARY="$(pwd)/target/release/signet-eval" python3 tests/test_ensure_behavior.py
 ```
 
 These Python acceptance checks can run locally and are also collected by hosted

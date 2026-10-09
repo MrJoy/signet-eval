@@ -1366,14 +1366,14 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
                         });
                     }
 
-                    // Check if ensure script exists (warning, not error)
+                    // A missing script is a warning here; the hook denies matching calls.
                     match resolve_ensure_script_path(&ec.check) {
                         Ok(path) => {
                             if !path.exists() {
                                 diagnostics.push(ValidationDiagnostic {
                                     rule_name: label.clone(),
                                     severity: DiagnosticSeverity::Warning,
-                                    error: format!("Ensure script not found: {}", path.display()),
+                                    error: format!("Ensure script not found: {}; matching calls are denied until it exists", path.display()),
                                     fix_hint: format!("Install the script: touch {} && chmod +x {}", path.display(), path.display()),
                                     auto_fixable: false,
                                 });
@@ -1401,7 +1401,7 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
                             diagnostics.push(ValidationDiagnostic {
                                 rule_name: label.clone(),
                                 severity: DiagnosticSeverity::Warning,
-                                error: format!("Cannot resolve ensure script '{}' (checks directory may not exist)", ec.check),
+                                error: format!("Cannot resolve ensure script '{}' (checks directory may not exist); matching calls are denied until it resolves", ec.check),
                                 fix_hint: "Create ~/.signet/checks/ directory and place your script there.".into(),
                                 auto_fixable: false,
                             });
@@ -1415,13 +1415,30 @@ pub fn validate_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
     diagnostics
 }
 
-/// Validate the stored system policy without diagnosing retired binary-owned rules.
+/// Validate the stored system policy. A retired binary-owned rule gets one
+/// warning saying it is ignored, in place of diagnostics for a rule that never runs.
 /// User policy validation deliberately continues to use `validate_policy`.
 pub fn validate_system_policy(config: &PolicyConfig) -> Vec<ValidationDiagnostic> {
-    validate_policy(config)
+    let mut diagnostics: Vec<_> = validate_policy(config)
         .into_iter()
         .filter(|diagnostic| !RETIRED_BUILT_IN_NAMES.contains(&diagnostic.rule_name.as_str()))
-        .collect()
+        .collect();
+    diagnostics.extend(
+        config
+            .rules
+            .iter()
+            .filter(|rule| RETIRED_BUILT_IN_NAMES.contains(&rule.name.as_str()))
+            .map(|rule| ValidationDiagnostic {
+                rule_name: rule.name.clone(),
+                severity: DiagnosticSeverity::Warning,
+                error: "Retired built-in rule name; this system policy entry is ignored.".into(),
+                fix_hint: "To keep this rule, move it to rules.yaml (user rules are evaluated). \
+                           Otherwise delete it from the system policy."
+                    .into(),
+                auto_fixable: false,
+            }),
+    );
+    diagnostics
 }
 
 /// Repair stored system rules without persisting the compiled-default overlay.

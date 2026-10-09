@@ -52,7 +52,7 @@ jobs:
           echo "TMPDIR=${TMPDIR}"
           status=0
           python3 tests/test_pr15_behavior.py || status=1
-          python3 tests/test_pr16_behavior.py || status=1
+          python3 tests/test_ensure_behavior.py || status=1
           python3 tests/test_mcp_behavior.py || status=1
           exit "${status}"
       - name: Verify packaged source and embedded adapter

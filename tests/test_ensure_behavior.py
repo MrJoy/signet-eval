@@ -19,10 +19,10 @@ GUARD = {'name': 'github_identity_guard', 'tool_pattern': '^Bash$', 'conditions'
          'ensure': {'check': 'gh-identity-matches-remote', 'timeout': 5}}
 
 
-class Pr16(unittest.TestCase):
+class EnsureBehavior(unittest.TestCase):
     def setUp(self):
         self.assertTrue(os.path.isabs(BIN) and os.access(BIN, os.X_OK), 'SIGNET_EVAL_BINARY must be an absolute executable path')
-        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix='pr16-'))
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix='ensure-'))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.d = {k: os.path.join(self.tmp, k) for k in ('home', 'signet', 'claude', 'bin', 'cwd', 'proj')}
         for p in self.d.values():
@@ -76,18 +76,49 @@ class Pr16(unittest.TestCase):
         self.assertNotIn('github_identity_guard', rules.stdout)
         v = self.run_cli(['validate'])
         self.assertNotIn('gh-identity-matches-remote', v.stdout + v.stderr)
+        self.assertRegex(v.stderr, r'github_identity_guard.*ignored', 'retired system entry not reported')
+        self.assertNotIn('Policy valid', v.stdout)
+        self.assertEqual(v.returncode, 0)
         with open(self.rp, 'w') as f:
             json.dump([dict(GUARD, name='custom_missing', ensure={'check': 'missing-custom-check', 'timeout': 5})], f)
         v2 = self.run_cli(['validate'])
         self.assertIn('missing-custom-check', v2.stdout + v2.stderr, 'no warning for invalid nonretired check')
+        r = self.run_cli(['eval'], json.dumps(self.claude('git push')))
+        out = json.loads(r.stdout)['hookSpecificOutput']
+        self.assertEqual(out['permissionDecision'], 'deny', 'missing user check must fail closed')
+        self.assertIn('missing-custom-check', out.get('permissionDecisionReason', ''))
         self.assertFalse(os.path.exists(self.ghmark))
+
+    def test_user_rule_with_retired_name_runs_while_stale_system_copy_is_ignored(self):
+        with open(self.pp, 'w') as f:
+            f.write(POLICY)
+        calls = os.path.join(self.tmp, 'user-check-calls')
+        verdict = os.path.join(self.tmp, 'verdict')
+        self.exe(os.path.join(self.checks, 'user-identity'),
+                 '#!/bin/sh\necho x >> %s\nexit "$(cat %s)"\n' % (calls, verdict))
+        with open(self.rp, 'w') as f:
+            json.dump([dict(GUARD, ensure={'check': 'user-identity', 'timeout': 5})], f)
+        for code, expected in (('1', 'deny'), ('0', 'allow')):
+            with self.subTest(exit=code):
+                with open(verdict, 'w') as f:
+                    f.write(code)
+                self.assertEqual(self.decide(self.claude('git push')), expected)
+        with open(calls) as f:
+            self.assertEqual(len(f.read().split()), 2, 'user check not run once per call')
+        rules = self.run_cli(['rules'])
+        self.assertEqual(rules.stdout.count('github_identity_guard'), 1, rules.stdout)
+        v = self.run_cli(['validate'])
+        self.assertRegex(v.stderr, r'github_identity_guard.*ignored')
+        self.assertIn('User rules valid', v.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.checks, 'gh-identity-matches-remote')))
 
     def test_user_ensure_gets_actual_context_claude_and_antigravity(self):
         exp, seen = os.path.join(self.tmp, 'exp.json'), os.path.join(self.tmp, 'seen.json')
         script = os.path.join(self.checks, 'ctxcheck')
         self.exe(script, '#!/usr/bin/env python3\nimport os,sys,json\ne=json.load(open(%r))\nd=sys.stdin.read()\n'
                  'c,w=os.environ.get("SIGNET_TOOL_COMMAND"),os.environ.get("SIGNET_TOOL_CWD","")\n'
-                 'json.dump({"cmd":c,"cwd":w,"stdin":d},open(%r,"w"))\n'
+                 'json.dump({"cmd":c,"cwd":w,"stdin":d,"src":os.environ.get("SIGNET_TOOL_CWD_SOURCE"),'
+                 '"host":os.environ.get("SIGNET_HOST_CWD")},open(%r,"w"))\n'
                  'sys.exit(0 if c==e["cmd"] and os.path.realpath(w)==os.path.realpath(e["cwd"]) else 1)\n' % (exp, seen))
         with open(script, 'rb') as f:
             original = f.read()
@@ -96,6 +127,8 @@ class Pr16(unittest.TestCase):
         mark = os.path.join(self.tmp, 'side-effect')
         cmd = 'touch %s; echo $(id) > %s && true | cat' % (mark, mark)
         ag = {'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.d['proj']}}}
+        # Claude supplies only the host envelope cwd; Antigravity supplies only the tool's Cwd.
+        sources = {'claude': ('host', self.d['proj']), 'antigravity': ('tool_input', '')}
         for name, env_in, extra in (('claude', self.claude(cmd), ()), ('antigravity', ag, ('--adapter', 'antigravity'))):
             with self.subTest(adapter=name):
                 with open(exp, 'w') as f:
@@ -109,6 +142,7 @@ class Pr16(unittest.TestCase):
                     s = json.load(f)
                 self.assertEqual(s['cmd'], cmd)
                 self.assertEqual(os.path.realpath(s['cwd']), self.d['proj'])
+                self.assertEqual((s['src'], s['host']), sources[name])
                 self.assertIsInstance(json.loads(s['stdin']), dict)
                 self.assertFalse(os.path.exists(mark), 'eval executed the tool command')
         with open(exp, 'w') as f:
@@ -117,6 +151,33 @@ class Pr16(unittest.TestCase):
         with open(script, 'rb') as f:
             self.assertEqual(f.read(), original)
         self.assertFalse(os.path.exists(mark))
+
+    def test_cwd_provenance_is_reported_separately(self):
+        seen = os.path.join(self.tmp, 'seen.json')
+        self.exe(os.path.join(self.checks, 'ctx'), '#!/usr/bin/env python3\nimport os,json\n'
+                 'json.dump({k:os.environ.get(k) for k in ("SIGNET_TOOL_CWD","SIGNET_TOOL_CWD_SOURCE","SIGNET_HOST_CWD")},'
+                 'open(%r,"w"))\n' % seen)
+        with open(self.rp, 'w') as f:
+            json.dump([dict(GUARD, name='ctx_rule', ensure={'check': 'ctx', 'timeout': 5})], f)
+        other = self.d['bin']
+        cases = (
+            ('requested beats host', {'command': 'ls', 'cwd': other}, (other, 'tool_input', self.d['proj'])),
+            ('empty requested ignored', {'command': 'ls', 'cwd': ''}, (self.d['proj'], 'host', self.d['proj'])),
+        )
+        for label, tool_input, expected in cases:
+            with self.subTest(label):
+                env_in = dict(self.claude('ls'), tool_input=tool_input)
+                self.assertEqual(self.decide(env_in), 'allow')
+                with open(seen) as f:
+                    got = json.load(f)
+                self.assertEqual((got['SIGNET_TOOL_CWD'], got['SIGNET_TOOL_CWD_SOURCE'], got['SIGNET_HOST_CWD']), expected)
+        env_in = self.claude('ls')
+        del env_in['cwd']
+        self.assertEqual(self.decide(env_in), 'allow')
+        with open(seen) as f:
+            got = json.load(f)
+        self.assertEqual((os.path.realpath(got['SIGNET_TOOL_CWD']), got['SIGNET_TOOL_CWD_SOURCE'], got['SIGNET_HOST_CWD']),
+                         (self.d['cwd'], 'process', ''))
 
     def test_validate_fix_preserves_raw_entries_and_clamps_timeout(self):
         slow = {'name': 'slow_user_check', 'tool_pattern': '^Slow$', 'conditions': ['true'], 'action': 'ENSURE',
