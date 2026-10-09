@@ -9,11 +9,21 @@
 ### Removed
 - `github_identity_guard` and its embedded `gh-identity-matches-remote` check. The script hardcoded one developer's owner-to-account map (`wandercom`, `meacjis`, everything else to `jmcentire`), so on any other machine it denied every `git push`/`pull`/`fetch`/`clone` and `gh` call, and deleting the script didn't help because the binary rewrote it on the next matching call. A copy of the rule in an existing `policy.yaml` snapshot is dropped on load. An existing `~/.signet/checks/gh-identity-matches-remote` is left in place; no built-in rule invokes it, but an explicit user-authored ENSURE rule can still do so. Delete it by hand if no longer wanted. Anyone who wants identity enforcement can keep their own script and add an `ENSURE` rule to `rules.yaml`.
 
+## [3.13.0] - 2026-09-24
+
+### Added
+- Optional Claude function adapter with prompt/output redaction, explicit installation, and versioned Kindex task admission receipts. Legacy integrations remain available.
+
 ### Fixed
+- Preserve sanitized host refusal and command-error explanations instead of masking them as `tool_result_unavailable`.
+- Scope binary self-protection to executable references and control invocations; repository names, source paths, and documentation content no longer trigger the binary rule by substring alone. The running owner executable remains protected at custom install paths, and ordinary execution wrappers retain protection. Other policy checks still apply.
+- Claude function hooks recheck current owner state instead of retaining startup conflicts. Confirmed disablement remains neutral, repaired owners recover automatically, and failures report safe diagnostic categories. Recovery prompts remain available with explicit warnings if redaction is unavailable.
+- Restored MCP proxy and management server builds with rmcp 2 by using its renamed text-content constructor.
 - The optional Claude function adapter loads again. Claude Code 2.1.274 names settings-hook events under `classic.` and refuses a hooks module that registers the bare `PreToolUse` event, so on that build the whole module failed to load. Because `install-modern` retires the legacy command hooks, Claude sessions then ran with no Signet enforcement at all. The adapter now registers `classic.PreToolUse`, which keeps the same input envelope and `allow` / `ask` / `deny` result.
 
 ### Changed
-- The function adapter is qualified against Claude Code 2.1.274 instead of 2.1.263. `integration install-modern` now requires 2.1.274, and the adapter revision is `claude-functions-2.1.274-v1`. An installed adapter reports a conflict until the binary and plugin are both upgraded, so rerun `signet-eval integration install-modern` after installing this release.
+- `integration install-modern` accepts exactly Claude Code 2.1.274 and 2.1.280; intermediate builds are rejected. The paired Rust/TypeScript adapter revision is `claude-functions-2.1.280-v1`, and plugin metadata is version 3.13.0. Upgrade the binary and rerun the installer together to avoid a revision conflict.
+- On 2026-09-23, both exact accepted builds passed real Claude host checks with isolated configuration and a synthetic local provider: installed-plugin behavior, Kindex coexistence with native-task denial, and plugin validation. Builds 2.1.275–2.1.279 remain unqualified and rejected; version-probe mocks alone do not establish compatibility.
 
 ## [3.12.2] - 2026-08-27
 
@@ -72,7 +82,7 @@
 - Adversarial tests in `policy::goodhart_tests` covering substring false-positive prevention (`test_block_rm_does_not_false_positive_on_substring_words`), real-rm-invocation coverage (`test_block_rm_still_blocks_real_rm_invocations`), and shell-metacharacter prefix handling (`test_block_rm_handles_rm_at_token_start_in_pipes_and_subshells`).
 
 ### Fixed
-- **`block_rm` false positives on substring word collisions.** The default `block_rm` rule used `contains(parameters, 'rm ')` — an unanchored substring match that denied any Bash command whose serialized parameters contained the bytes `rm ` as a substring. This produced false positives on benign commands navigating paths or words like `drone_swarm`, `firmware`, `transform`, `arm-toolchain`, `farm`, `warm`, `harmless`, `germ`, and many others. Real failure surfaced when `ls ~/Code/drone_swarm` and `find ~/Code/drone_swarm -name '*.py'` were both denied as "file deletion." The rule now uses `matches(parameters, '\brm\b')` — word-boundary anchored — which still blocks every real `rm` invocation (including those chained through shell metacharacters `;`, `&&`, `||`, `|`, `(`, `$(...)`) while eliminating the substring false positives.
+- **`block_rm` false positives on substring word collisions.** The default `block_rm` rule used `contains(parameters, 'rm ')` — an unanchored substring match that denied any Bash command whose serialized parameters contained the bytes `rm ` as a substring. This produced false positives on benign commands navigating paths or words like `drone_swarm`, `firmware`, `transform`, `arm-toolchain`, `farm`, `warm`, `harmless`, `germ`, and many others. Real failure surfaced when `ls /Users/example/Code/drone_swarm` and `find /Users/example/Code/drone_swarm -name '*.py'` were both denied as "file deletion." The rule now uses `matches(parameters, '\brm\b')` — word-boundary anchored — which still blocks every real `rm` invocation (including those chained through shell metacharacters `;`, `&&`, `||`, `|`, `(`, `$(...)`) while eliminating the substring false positives.
 - **`matches(parameters, …)` semantics.** The `matches` condition function previously looked up `parameters` as a literal field name in the JSON object — which always returned empty since the JSON's top-level keys are the parameter names themselves (e.g., `command`), not `parameters`. The function now special-cases the `parameters` field to run the regex against the full serialized parameter JSON, mirroring the existing `contains(parameters, ...)` semantics. Any other field name continues to be looked up by name. This makes `matches(parameters, ...)` actually usable as a regex equivalent of `contains(parameters, ...)`.
 
 ### Notes
