@@ -179,6 +179,26 @@ class EnsureBehavior(unittest.TestCase):
         self.assertEqual((os.path.realpath(got['SIGNET_TOOL_CWD']), got['SIGNET_TOOL_CWD_SOURCE'], got['SIGNET_HOST_CWD']),
                          (self.d['cwd'], 'process', ''))
 
+    def test_command_falls_back_to_first_non_empty_string(self):
+        seen = os.path.join(self.tmp, 'seen-cmd')
+        self.exe(os.path.join(self.checks, 'cmdctx'), '#!/usr/bin/env python3\nimport os\n'
+                 'open(%r,"w").write(os.environ.get("SIGNET_TOOL_COMMAND","<unset>"))\n' % seen)
+        with open(self.rp, 'w') as f:
+            json.dump([dict(GUARD, name='cmd_rule', ensure={'check': 'cmdctx', 'timeout': 5})], f)
+        cases = (
+            ({'command': 123, 'cmd': 'git push'}, 'git push'),
+            ({'command': '', 'cmd': 'git push'}, 'git push'),
+            ({'command': None, 'cmd': 'git push'}, 'git push'),
+            ({'cmd': 'git push'}, 'git push'),
+            ({'command': 'git fetch', 'cmd': 'git push'}, 'git fetch'),
+            ({'command': 123}, ''),
+        )
+        for tool_input, expected in cases:
+            with self.subTest(tool_input=tool_input):
+                self.assertEqual(self.decide(dict(self.claude('x'), tool_input=tool_input)), 'allow')
+                with open(seen) as f:
+                    self.assertEqual(f.read(), expected)
+
     def test_validate_fix_preserves_raw_entries_and_clamps_timeout(self):
         slow = {'name': 'slow_user_check', 'tool_pattern': '^Slow$', 'conditions': ['true'], 'action': 'ENSURE',
                 'ensure': {'check': 'slowcheck', 'timeout': 60}}

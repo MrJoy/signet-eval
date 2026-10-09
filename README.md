@@ -164,8 +164,9 @@ Rules are evaluated in order — first match wins. Multiple conditions on a rule
 ## ENSURE check context
 
 User-managed ENSURE scripts receive the original normalized tool name and input
-on stdin. `SIGNET_TOOL_COMMAND` carries the normalized `command` (or `cmd`) as a
-literal environment value; it is empty for noncommand tools without those fields.
+on stdin. `SIGNET_TOOL_COMMAND` carries the first non-empty string among the
+normalized `command` and `cmd` fields as a literal environment value. It is empty
+when neither field holds one.
 The forwarding mechanism does not interpret that value as shell code.
 
 `SIGNET_TOOL_CWD` uses the normalized tool `cwd`/`workdir`, then the host envelope's

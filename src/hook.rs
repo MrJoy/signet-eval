@@ -770,16 +770,13 @@ fn resolve_ensure(
     }
 
     // Forward context as literal child environment values, never shell source.
-    let tool_command = call
-        .parameters
-        .get("command")
-        .or_else(|| call.parameters.get("cmd"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let requested_cwd = ["cwd", "workdir"]
-        .iter()
-        .filter_map(|key| call.parameters.get(*key).and_then(Value::as_str))
-        .find(|cwd| !cwd.is_empty());
+    let first_non_empty = |keys: &[&str]| {
+        keys.iter()
+            .filter_map(|key| call.parameters.get(*key).and_then(Value::as_str))
+            .find(|value| !value.is_empty())
+    };
+    let tool_command = first_non_empty(&["command", "cmd"]).unwrap_or("");
+    let requested_cwd = first_non_empty(&["cwd", "workdir"]);
     let host_cwd = envelope_cwd.filter(|cwd| !cwd.is_empty());
     let (tool_cwd, cwd_source) = match (requested_cwd, host_cwd) {
         (Some(cwd), _) => (cwd.to_owned(), "tool_input"),
