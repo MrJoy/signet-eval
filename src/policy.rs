@@ -222,22 +222,66 @@ pub struct CompiledPolicy {
 }
 
 impl CompiledPolicy {
-    /// True when some rule names `field` and every condition of that rule
-    /// that cannot see `field` already holds for `call`. Conditions are AND'd,
-    /// so a rule failing elsewhere cannot match whatever `field` turns out to
-    /// be. Lets hook mode skip costly parameter enrichment that could not
-    /// change the outcome.
+    /// True when `field` could change the outcome for `call`: some reachable
+    /// rule names `field` and every condition of that rule that cannot see
+    /// `field` already holds. Authorization is first-match-wins, so rules after
+    /// one that matches regardless of `field` are unreachable; INJECT rules
+    /// run in their own pass and are always reachable. Lets hook mode skip
+    /// costly parameter enrichment that could not change the outcome.
     pub fn needs_param(&self, field: &str, call: &ToolCall, vault: Option<&Vault>) -> bool {
+        for rule in &self.rules {
+            if rule.action == Decision::Inject || !auth_rule_applies(rule, call) {
+                continue;
+            }
+            if conditions_need_param(&rule.conditions, field, call, vault) {
+                return true;
+            }
+            let reads_field = rule
+                .conditions
+                .iter()
+                .any(|cond| condition_reads_param(cond, field));
+            if !reads_field && conditions_hold(&rule.conditions, call, vault) {
+                break;
+            }
+        }
         self.rules.iter().any(|rule| {
-            rule.tool_regex.is_match(&call.tool_name)
-                && rule.conditions.iter().any(|cond| cond.contains(field))
-                && rule
-                    .conditions
-                    .iter()
-                    .filter(|cond| !condition_reads_param(cond, field))
-                    .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
+            rule.action == Decision::Inject
+                && rule.tool_regex.is_match(&call.tool_name)
+                && conditions_need_param(&rule.conditions, field, call, vault)
         })
     }
+}
+
+/// Whether the authorization pass considers `rule` for `call` at all.
+fn auth_rule_applies(rule: &CompiledRule, call: &ToolCall) -> bool {
+    // These native tools cannot edit settings. Do not classify shell text:
+    // a Bash command that reads a file can still write later in the same call.
+    rule.tool_regex.is_match(&call.tool_name)
+        && !(rule.locked
+            && rule.name == "protect_hook_config"
+            && matches!(call.tool_name.as_str(), "Read" | "Grep" | "Glob"))
+}
+
+fn conditions_hold(conditions: &[String], call: &ToolCall, vault: Option<&Vault>) -> bool {
+    conditions
+        .iter()
+        .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
+}
+
+/// True when `conditions` name `field` and every one that cannot see `field`
+/// already holds for `call`. Conditions are AND'd, so a rule failing
+/// elsewhere cannot match whatever `field` turns out to be.
+fn conditions_need_param(
+    conditions: &[String],
+    field: &str,
+    call: &ToolCall,
+    vault: Option<&Vault>,
+) -> bool {
+    conditions.iter().any(|cond| cond.contains(field))
+        && conditions
+            .iter()
+            .filter(|cond| !condition_reads_param(cond, field))
+            .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
 }
 
 /// Conditions that read only named inputs, never the serialized parameters.
@@ -584,16 +628,7 @@ pub fn evaluate(
             continue;
         }
 
-        // Check tool name regex
-        if !rule.tool_regex.is_match(&call.tool_name) {
-            continue;
-        }
-        // These native tools cannot edit settings. Do not classify shell text:
-        // a Bash command that reads a file can still write later in the same call.
-        if rule.locked
-            && rule.name == "protect_hook_config"
-            && matches!(call.tool_name.as_str(), "Read" | "Grep" | "Glob")
-        {
+        if !auth_rule_applies(rule, call) {
             continue;
         }
 

@@ -1441,6 +1441,48 @@ rules:
     }
 
     #[test]
+    fn agent_model_is_not_resolved_for_rules_shadowed_by_an_earlier_match() {
+        let attached = |policy: &CompiledPolicy, command: &str| {
+            let input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+                "model": "claude-opus-5-5"
+            });
+            let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
+            attach_agent_model(&input, policy, None, &mut call);
+            call.parameters.get("agent_model").is_some()
+        };
+        let policy = |model_rule_action: &str| {
+            policy_from_yaml(&format!(
+                r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: allow_gcloud_auth
+    tool_pattern: "^Bash$"
+    conditions:
+      - "matches(command, '^gcloud auth ')"
+    action: ALLOW
+  - name: model_rule
+    tool_pattern: "^Bash$"
+    conditions:
+      - "matches(command, '^gcloud ')"
+      - "not(matches(agent_model, '^claude-opus-'))"
+    action: {model_rule_action}
+    inject:
+      trigger: {{mode: constant, peak: 1.0}}
+      payload: {{text: "use opus"}}
+"#
+            ))
+        };
+        // First match wins, so the earlier ALLOW decides `gcloud auth`.
+        assert!(!attached(&policy("DENY"), "gcloud auth list"));
+        assert!(attached(&policy("DENY"), "gcloud sql connect"));
+        // INJECT rules run in their own pass and stay reachable.
+        assert!(attached(&policy("INJECT"), "gcloud auth list"));
+    }
+
+    #[test]
     fn agent_model_is_resolved_for_conditions_reading_all_parameters() {
         for reader in [
             "matches(parameters, 'claude-opus-')",
