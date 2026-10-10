@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- An ENSURE rule whose check script is missing or cannot be resolved now denies with a reason naming the check. Before, an unlocked rule allowed the call silently, which was only safe while the binary installed its own identity check. Copy `~/.signet/checks/` along with any `rules.yaml` that refers to it.
+- An ENSURE rule whose check script is missing or cannot be resolved now denies with a reason naming the check. Before, an unlocked rule allowed the call silently, which was only safe while the binary installed its own identity check. Copy `~/.signet/checks/` along with any `rules.yaml` that refers to it. A check that cannot run for any other reason (not executable, timed out, input too large) also names the check, even when the rule sets a custom `message`.
 - ENSURE scripts get `SIGNET_TOOL_CWD_SOURCE` (`tool_input`, `host` or `process`) and `SIGNET_HOST_CWD` next to `SIGNET_TOOL_CWD`, so a check can tell a model-supplied directory from the host's. An empty tool `cwd` no longer hides the host value.
 - The MCP `signet_edit_rule`, `signet_reorder_rule` and `signet_remove_rule` tools act on a user rule whose name matches an unlocked system rule. That user rule is the one evaluated. Before, the tools refused it as a system rule.
 

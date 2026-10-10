@@ -737,21 +737,28 @@ fn emit_deny(adapter: HookAdapter, event: HookEvent, reason: &str) {
 /// A missing or unresolvable check fails closed for every rule. The binary
 /// installs no checks, so an absent script means the operator's rule cannot be
 /// evaluated, which is not the same as the check passing.
+///
+/// Every reason for a check that could not run names the check, because a
+/// rule's custom message replaces the default one that would.
 fn resolve_ensure(
     config: &EnsureConfig,
     call: &ToolCall,
     envelope_cwd: Option<&str>,
 ) -> (bool, String) {
+    let could_not_run = |detail: String| {
+        (
+            false,
+            format!("Check '{}' could not run: {detail}", config.check),
+        )
+    };
+
     let script_path = match policy::resolve_ensure_script_path(&config.check) {
         Ok(p) => p,
-        Err(e) => return (false, format!("Check script unavailable: {e}")),
+        Err(e) => return could_not_run(format!("script unavailable: {e}")),
     };
 
     if !script_path.exists() {
-        return (
-            false,
-            format!("Check script not found: {}", script_path.display()),
-        );
+        return could_not_run(format!("script not found: {}", script_path.display()));
     }
 
     let timeout_secs = config.timeout.max(1).min(30) as u64;
@@ -763,10 +770,9 @@ fn resolve_ensure(
     .to_string();
     const CHECK_INPUT_MAX_BYTES: usize = 32 * 1024;
     if normalized_input.len() > CHECK_INPUT_MAX_BYTES {
-        return (
-            false,
-            format!("Ensure check input exceeds the {CHECK_INPUT_MAX_BYTES}-byte safety limit"),
-        );
+        return could_not_run(format!(
+            "input exceeds the {CHECK_INPUT_MAX_BYTES}-byte safety limit"
+        ));
     }
 
     // Forward context as literal child environment values, never shell source.
@@ -800,7 +806,7 @@ fn resolve_ensure(
 
     let mut child = match command.spawn() {
         Ok(c) => c,
-        Err(e) => return (false, format!("Failed to spawn check script: {e}")),
+        Err(e) => return could_not_run(format!("failed to spawn script: {e}")),
     };
     if let Some(mut child_stdin) = child.stdin.take() {
         // Some checks do not consume stdin and may exit before this write. Their
@@ -829,12 +835,9 @@ fn resolve_ensure(
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            (
-                false,
-                format!("Check script timed out after {timeout_secs}s"),
-            )
+            could_not_run(format!("script timed out after {timeout_secs}s"))
         }
-        Err(e) => (false, format!("Error waiting for check script: {e}")),
+        Err(e) => could_not_run(format!("error waiting for script: {e}")),
     }
 }
 

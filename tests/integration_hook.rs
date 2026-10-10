@@ -709,6 +709,84 @@ rules:
     assert!(out.contains("timed out"));
 }
 
+/// Run a Bash `deploy` call against one ENSURE rule whose custom message
+/// leaves out the check name, and return the hook output.
+fn run_ensure_with_custom_message(dir: &std::path::Path, check: &str, timeout: u32) -> String {
+    let policy = format!(
+        r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: ensure_test
+    tool_pattern: ".*"
+    conditions:
+      - "contains(parameters, 'deploy')"
+    action: ENSURE
+    ensure:
+      check: {check}
+      timeout: {timeout}
+      message: Deploy blocked
+"#
+    );
+    let (out, code) = run_hook_with_policy(
+        r#"{"tool_name":"Bash","tool_input":{"command":"deploy app"}}"#,
+        &policy,
+        dir,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(parse_decision(&out), "deny", "{out}");
+    assert!(out.contains("Deploy blocked"), "{out}");
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hook_ensure_unspawnable_check_named_despite_custom_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let checks_dir = dir.path().join("checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let script = checks_dir.join("noexec-check");
+    std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let out = run_ensure_with_custom_message(dir.path(), "noexec-check", 5);
+    assert!(out.contains("'noexec-check'"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hook_ensure_timed_out_check_named_despite_custom_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let checks_dir = dir.path().join("checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let script = checks_dir.join("hang-check");
+    std::fs::write(&script, "#!/bin/sh\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = run_ensure_with_custom_message(dir.path(), "hang-check", 1);
+    assert!(out.contains("'hang-check'"), "{out}");
+    assert!(out.contains("timed out"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hook_ensure_escaping_check_named_despite_custom_message() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let checks_dir = dir.path().join("checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let outside = dir.path().join("outside-script");
+    std::fs::write(&outside, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(&outside, checks_dir.join("escape-check")).unwrap();
+
+    let out = run_ensure_with_custom_message(dir.path(), "escape-check", 5);
+    assert!(out.contains("'escape-check'"), "{out}");
+    assert!(out.contains("escapes checks directory"), "{out}");
+}
+
 #[test]
 fn test_hook_ensure_missing_script() {
     // An operator-authored ensure rule whose script is absent cannot be
