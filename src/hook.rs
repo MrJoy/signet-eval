@@ -1419,6 +1419,59 @@ rules:
         assert!(!attached("gcloud auth list", &policy::default_policy()));
     }
 
+    fn policy_from_yaml(yaml: &str) -> CompiledPolicy {
+        CompiledPolicy::from_config(&serde_yaml::from_str(yaml).unwrap())
+    }
+
+    /// Hook-mode decision for a Bash call issued by `model`.
+    fn decide_with_model(
+        policy: &CompiledPolicy,
+        vault: Option<&Vault>,
+        command: &str,
+        model: &str,
+    ) -> Decision {
+        let input = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "model": model
+        });
+        let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
+        attach_agent_model(&input, policy, vault, &mut call);
+        policy::evaluate(&call, policy, vault).decision
+    }
+
+    #[test]
+    fn agent_model_is_resolved_for_conditions_reading_all_parameters() {
+        for reader in [
+            "matches(parameters, 'claude-opus-')",
+            "contains(parameters, 'claude-opus-')",
+            "any_of(parameters, 'claude-opus-', 'gpt-5')",
+            "contains_word(parameters, 'claude-opus-5-5')",
+            "'claude-opus-'",
+            "not(not(contains(parameters, 'claude-opus-')))",
+            "or(false, contains(parameters, 'claude-opus-'))",
+        ] {
+            let policy = policy_from_yaml(&format!(
+                r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: opus_reader
+    tool_pattern: "^Bash$"
+    conditions:
+      - "{reader}"
+      - "matches(agent_model, '.')"
+    action: DENY
+"#
+            ));
+            assert_eq!(
+                decide_with_model(&policy, None, "ls", "claude-opus-5-5"),
+                Decision::Deny,
+                "{reader}"
+            );
+        }
+    }
+
     #[test]
     fn agent_model_gates_cloud_tools_and_fails_closed_when_unknown() {
         let compiled = model_gate_policy();

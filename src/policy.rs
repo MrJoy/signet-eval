@@ -222,10 +222,11 @@ pub struct CompiledPolicy {
 }
 
 impl CompiledPolicy {
-    /// True when some rule reads `field` and every other condition of that
-    /// rule already holds for `call`. Conditions are AND'd, so a rule failing
-    /// elsewhere cannot match whatever `field` turns out to be. Lets hook mode
-    /// skip costly parameter enrichment that could not change the outcome.
+    /// True when some rule names `field` and every condition of that rule
+    /// that cannot see `field` already holds for `call`. Conditions are AND'd,
+    /// so a rule failing elsewhere cannot match whatever `field` turns out to
+    /// be. Lets hook mode skip costly parameter enrichment that could not
+    /// change the outcome.
     pub fn needs_param(&self, field: &str, call: &ToolCall, vault: Option<&Vault>) -> bool {
         self.rules.iter().any(|rule| {
             rule.tool_regex.is_match(&call.tool_name)
@@ -233,10 +234,58 @@ impl CompiledPolicy {
                 && rule
                     .conditions
                     .iter()
-                    .filter(|cond| !cond.contains(field))
+                    .filter(|cond| !condition_reads_param(cond, field))
                     .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
         })
     }
+}
+
+/// Conditions that read only named inputs, never the serialized parameters.
+const NAMED_INPUT_CONDITIONS: [&str; 11] = [
+    "param_eq",
+    "param_ne",
+    "param_gt",
+    "param_lt",
+    "param_contains",
+    "spend_gt",
+    "spend_plus_amount_gt",
+    "has_credential",
+    "has_recent_action",
+    "has_current_session",
+    "protected_binary_reference",
+];
+
+/// True when `cond` could change once `field` is added to the parameters:
+/// it names `field`, or it reads the serialized parameters (`contains`,
+/// `any_of`, `contains_word`, `matches(parameters, ...)`, a bare string).
+/// Forms not known to read only named inputs count as reading `field`.
+fn condition_reads_param(cond: &str, field: &str) -> bool {
+    let cond = cond.trim();
+    if cond.contains(field) {
+        return true;
+    }
+    if let Some(inner) = strip_fn(cond, "not") {
+        return condition_reads_param(inner, field);
+    }
+    if let Some(args) = strip_fn(cond, "or") {
+        let separator = if args.contains(" || ") { " || " } else { ", " };
+        let mut remaining = args;
+        while let Some((left, right)) = split_at_top_level(remaining, separator) {
+            if condition_reads_param(left, field) {
+                return true;
+            }
+            remaining = right;
+        }
+        return condition_reads_param(remaining, field);
+    }
+    if let Some(args) = strip_fn(cond, "matches") {
+        return args.split(',').next().map(str::trim) == Some("parameters");
+    }
+    !(cond == "true"
+        || cond == "false"
+        || NAMED_INPUT_CONDITIONS
+            .iter()
+            .any(|name| strip_fn(cond, name).is_some()))
 }
 
 pub struct EvaluationResult {
