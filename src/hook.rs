@@ -1528,6 +1528,40 @@ rules:
     }
 
     #[test]
+    fn agent_model_gating_treats_vault_state_as_undecided() {
+        crate::vault::set_test_session_id(Some("vault-state-gate"));
+        let dir = tempfile::tempdir().unwrap();
+        let key = crate::vault::derive_master_key("testpass", &[0u8; 16]);
+        let vault = Vault::new(key, dir.path().join("state.db"));
+        let policy = policy_from_yaml(
+            r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: no_haiku_after_plan
+    tool_pattern: "^Bash$"
+    conditions:
+      - "has_recent_action('EnterPlanMode', 5)"
+      - "matches(agent_model, '^claude-haiku-')"
+    action: DENY
+"#,
+        );
+        let input = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "model": "claude-haiku-4-5-20251001"
+        });
+        let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
+        attach_agent_model(&input, &policy, Some(&vault), &mut call);
+        // The ledger changes between gating and evaluation, as a concurrent
+        // hook or a transient read failure would make it.
+        vault.log_action("EnterPlanMode", "allow", "", 0.0, "{}");
+        let decision = policy::evaluate(&call, &policy, Some(&vault)).decision;
+        crate::vault::clear_test_session_id();
+        assert_eq!(decision, Decision::Deny);
+    }
+
+    #[test]
     fn agent_model_is_resolved_for_active_preflight_constraints() {
         crate::vault::set_test_session_id(None);
         let dir = tempfile::tempdir().unwrap();

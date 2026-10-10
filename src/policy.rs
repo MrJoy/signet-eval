@@ -223,8 +223,8 @@ pub struct CompiledPolicy {
 
 impl CompiledPolicy {
     /// True when `field` could change the outcome for `call`: some reachable
-    /// rule names `field` and every condition of that rule that cannot see
-    /// `field` already holds. Authorization is first-match-wins, so rules after
+    /// rule names `field` and every condition of that rule the gate can settle
+    /// already holds. Authorization is first-match-wins, so rules after
     /// one that matches regardless of `field` are unreachable; INJECT rules
     /// run in their own pass and are always reachable. Lets hook mode skip
     /// costly parameter enrichment that could not change the outcome.
@@ -236,11 +236,11 @@ impl CompiledPolicy {
             if conditions_need_param(&rule.conditions, field, call, vault) {
                 return true;
             }
-            let reads_field = rule
+            let undecided = rule
                 .conditions
                 .iter()
-                .any(|cond| condition_reads_param(cond, field));
-            if !reads_field && conditions_hold(&rule.conditions, call, vault) {
+                .any(|cond| undecided_at_gate(cond, field));
+            if !undecided && conditions_hold(&rule.conditions, call, vault) {
                 break;
             }
         }
@@ -268,7 +268,7 @@ fn conditions_hold(conditions: &[String], call: &ToolCall, vault: Option<&Vault>
         .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
 }
 
-/// True when `conditions` name `field` and every one that cannot see `field`
+/// True when `conditions` name `field` and every one the gate can settle
 /// already holds for `call`. Conditions are AND'd, so a rule failing
 /// elsewhere cannot match whatever `field` turns out to be.
 pub(crate) fn conditions_need_param(
@@ -280,54 +280,55 @@ pub(crate) fn conditions_need_param(
     conditions.iter().any(|cond| cond.contains(field))
         && conditions
             .iter()
-            .filter(|cond| !condition_reads_param(cond, field))
+            .filter(|cond| !undecided_at_gate(cond, field))
             .all(|cond| matches!(evaluate_condition(cond, call, vault), Ok(true)))
 }
 
-/// Conditions that read only named inputs, never the serialized parameters.
-const NAMED_INPUT_CONDITIONS: [&str; 11] = [
+/// Conditions that read only named call inputs or process state, never the
+/// serialized parameters or the vault. Vault readers (`spend_gt`,
+/// `spend_plus_amount_gt`, `has_credential`, `has_recent_action`) are left
+/// out: the gate and `evaluate` read the vault separately, and a concurrent
+/// write or a failed read between them must not leave `field` unresolved.
+const STABLE_CONDITIONS: [&str; 7] = [
     "param_eq",
     "param_ne",
     "param_gt",
     "param_lt",
     "param_contains",
-    "spend_gt",
-    "spend_plus_amount_gt",
-    "has_credential",
-    "has_recent_action",
     "has_current_session",
     "protected_binary_reference",
 ];
 
-/// True when `cond` could change once `field` is added to the parameters:
-/// it names `field`, or it reads the serialized parameters (`contains`,
-/// `any_of`, `contains_word`, `matches(parameters, ...)`, a bare string).
-/// Forms not known to read only named inputs count as reading `field`.
-fn condition_reads_param(cond: &str, field: &str) -> bool {
+/// True when the gate cannot settle `cond` before `field` is added: it names
+/// `field`, reads the serialized parameters (`contains`, `any_of`,
+/// `contains_word`, `matches(parameters, ...)`, a bare string), or reads
+/// vault state that may change before `evaluate`. Forms not known to be
+/// stable count as undecided.
+fn undecided_at_gate(cond: &str, field: &str) -> bool {
     let cond = cond.trim();
     if cond.contains(field) {
         return true;
     }
     if let Some(inner) = strip_fn(cond, "not") {
-        return condition_reads_param(inner, field);
+        return undecided_at_gate(inner, field);
     }
     if let Some(args) = strip_fn(cond, "or") {
         let separator = if args.contains(" || ") { " || " } else { ", " };
         let mut remaining = args;
         while let Some((left, right)) = split_at_top_level(remaining, separator) {
-            if condition_reads_param(left, field) {
+            if undecided_at_gate(left, field) {
                 return true;
             }
             remaining = right;
         }
-        return condition_reads_param(remaining, field);
+        return undecided_at_gate(remaining, field);
     }
     if let Some(args) = strip_fn(cond, "matches") {
         return args.split(',').next().map(str::trim) == Some("parameters");
     }
     !(cond == "true"
         || cond == "false"
-        || NAMED_INPUT_CONDITIONS
+        || STABLE_CONDITIONS
             .iter()
             .any(|name| strip_fn(cond, name).is_some()))
 }
