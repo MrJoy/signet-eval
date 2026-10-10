@@ -271,7 +271,7 @@ fn conditions_hold(conditions: &[String], call: &ToolCall, vault: Option<&Vault>
 /// True when `conditions` name `field` and every one that cannot see `field`
 /// already holds for `call`. Conditions are AND'd, so a rule failing
 /// elsewhere cannot match whatever `field` turns out to be.
-fn conditions_need_param(
+pub(crate) fn conditions_need_param(
     conditions: &[String],
     field: &str,
     call: &ToolCall,

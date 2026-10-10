@@ -229,16 +229,33 @@ const TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
 const TOOL_USE_WAIT: Duration = Duration::from_millis(5000);
 const TOOL_USE_POLL: Duration = Duration::from_millis(25);
 
-/// Attach `agent_model` to a parsed hook call when a rule could turn on it.
-/// Resolution can wait on the host's transcript, so calls that no
-/// model-scoped rule could match skip it entirely.
+/// Attach `agent_model` to a parsed hook call when a rule or an active
+/// preflight constraint could turn on it. Resolution can wait on the host's
+/// transcript, so calls that nothing model-scoped could match skip it.
 pub(crate) fn attach_agent_model(
     raw_input: &Value,
     policy: &CompiledPolicy,
     vault: Option<&Vault>,
     call: &mut ToolCall,
 ) {
-    if !policy.needs_param(AGENT_MODEL_FIELD, call, vault) {
+    let preflight_needs_model = || {
+        vault
+            .and_then(Vault::active_preflight)
+            .is_some_and(|preflight| {
+                !preflight.escalated
+                    && preflight.constraints.iter().any(|constraint| {
+                        regex::Regex::new(&constraint.tool_pattern)
+                            .is_ok_and(|re| re.is_match(&call.tool_name))
+                            && policy::conditions_need_param(
+                                &constraint.conditions,
+                                AGENT_MODEL_FIELD,
+                                call,
+                                vault,
+                            )
+                    })
+            })
+    };
+    if !policy.needs_param(AGENT_MODEL_FIELD, call, vault) && !preflight_needs_model() {
         return;
     }
     let Some(model) = resolve_agent_model(raw_input) else {
@@ -1480,6 +1497,58 @@ rules:
         assert!(attached(&policy("DENY"), "gcloud sql connect"));
         // INJECT rules run in their own pass and stay reachable.
         assert!(attached(&policy("INJECT"), "gcloud auth list"));
+    }
+
+    #[test]
+    fn agent_model_is_resolved_for_active_preflight_constraints() {
+        crate::vault::set_test_session_id(None);
+        let dir = tempfile::tempdir().unwrap();
+        let key = crate::vault::derive_master_key("testpass", &[0u8; 16]);
+        let vault = Vault::new(key, dir.path().join("state.db"));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        vault
+            .store_preflight(&Preflight {
+                id: "opus-only".into(),
+                task: "cloud work".into(),
+                risks: vec![],
+                constraints: vec![SoftConstraint {
+                    name: "gcloud_requires_opus".into(),
+                    tool_pattern: "^Bash$".into(),
+                    conditions: vec![
+                        "matches(command, '^gcloud ')".into(),
+                        "not(matches(agent_model, '^claude-opus-'))".into(),
+                    ],
+                    action: "DENY".into(),
+                    reason: "gcloud is Opus-only".into(),
+                    alternative: "hand off to Opus".into(),
+                }],
+                submitted_at: now,
+                lockout_until: now + 3600,
+                violation_count: 0,
+                escalated: false,
+                session_id: None,
+            })
+            .unwrap();
+        let preflight = vault.active_preflight().unwrap();
+
+        // The hard policy never names agent_model; only the constraint does.
+        let policy = policy::default_policy();
+        let violates = |model: &str| {
+            let input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "gcloud sql connect"},
+                "model": model
+            });
+            let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
+            attach_agent_model(&input, &policy, Some(&vault), &mut call);
+            evaluate_preflight_constraint(&call, &preflight, &vault).is_some()
+        };
+        assert!(!violates("claude-opus-5-5"));
+        assert!(violates("claude-haiku-4-5-20251001"));
+        crate::vault::clear_test_session_id();
     }
 
     #[test]

@@ -241,9 +241,13 @@ the tool call. Signet resolves it in this order:
    through the `turn_context` preceding the matching `function_call`.
 3. With no call id, the newest model in the last 1 MiB of the transcript.
 
-Resolution only happens for calls that a rule naming `agent_model` could
-match: its tool pattern and all of its other conditions must already hold.
-Other calls pay nothing. Any `agent_model` in the tool input itself is
+Resolution only happens for calls that a rule or active preflight constraint
+naming `agent_model` could match: its tool pattern and its other conditions
+must already hold. Conditions that read the whole parameter set, such as
+`contains(parameters, ...)`, see `agent_model` too, so they are left
+undecided. A rule behind an earlier rule that already matches is skipped,
+since authorization is first-match-wins; INJECT rules always count. Other
+calls pay nothing. Any `agent_model` in the tool input itself is
 discarded, so the agent cannot claim a different model.
 
 When no model can be determined the field is absent and compares as an empty
