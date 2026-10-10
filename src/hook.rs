@@ -364,20 +364,20 @@ fn turn_context_model(entry: &Value) -> Option<String> {
 fn tool_use_model(tail: &str, tool_use_id: &str) -> Option<String> {
     let mut codex_model = None;
     for line in tail.lines() {
-        let is_turn_context = line.contains("\"turn_context\"");
-        if !is_turn_context && !line.contains(tool_use_id) {
+        // Cheap prefilter only: the parsed top-level `type` decides the kind,
+        // since tool input can carry either string.
+        if !line.contains("\"turn_context\"") && !line.contains(tool_use_id) {
             continue;
         }
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if is_turn_context {
-            if let Some(model) = turn_context_model(&entry) {
-                codex_model = Some(model);
-            }
-            continue;
-        }
         match entry.get("type").and_then(Value::as_str) {
+            Some("turn_context") => {
+                if let Some(model) = turn_context_model(&entry) {
+                    codex_model = Some(model);
+                }
+            }
             Some("assistant") => {
                 let message = entry.get("message");
                 let issued = message
@@ -1259,6 +1259,34 @@ rules:
             "tool_use_id": "toolu_real"
         }));
         assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    }
+
+    #[test]
+    fn agent_model_reads_an_issuing_entry_whose_input_mentions_turn_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        write_lines(
+            &transcript,
+            &[serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-opus-5-5",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_ctx",
+                        "name": "Bash",
+                        "input": {"command": "gcloud auth list", "turn_context": {}}
+                    }]
+                }
+            })],
+        );
+        let model = claude_model(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "gcloud auth list"},
+            "transcript_path": transcript,
+            "tool_use_id": "toolu_ctx"
+        }));
+        assert_eq!(model.as_deref(), Some("claude-opus-5-5"));
     }
 
     #[test]
