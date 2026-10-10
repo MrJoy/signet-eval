@@ -775,6 +775,44 @@ rules:
     assert!(out.contains("identity-check"), "{out}");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_hook_ensure_dangling_symlink_denies() {
+    // A check that links to a script which no longer exists cannot be
+    // canonicalized, and must deny like any other missing script.
+    let dir = tempfile::tempdir().unwrap();
+    let checks_dir = dir.path().join("checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("removed-script"),
+        checks_dir.join("linked-check"),
+    )
+    .unwrap();
+
+    let policy = r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: ensure_test
+    tool_pattern: "^Bash$"
+    conditions:
+      - "contains(parameters, 'push')"
+    action: ENSURE
+    ensure:
+      check: linked-check
+      timeout: 5
+"#;
+
+    let (out, code) = run_hook_with_policy(
+        r#"{"tool_name":"Bash","tool_input":{"command":"git push"}}"#,
+        policy,
+        dir.path(),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(parse_decision(&out), "deny");
+    assert!(out.contains("linked-check"), "{out}");
+}
+
 #[test]
 fn test_hook_ensure_missing_script_locked_denies() {
     // Locked ensure rule with missing script → deny (fail-closed for self-protection).
