@@ -226,14 +226,24 @@ impl CompiledPolicy {
     /// rule names `field` and every condition of that rule the gate can settle
     /// already holds. Authorization is first-match-wins, so rules after
     /// one that matches regardless of `field` are unreachable; INJECT rules
-    /// run in their own pass and are always reachable. Lets hook mode skip
-    /// costly parameter enrichment that could not change the outcome.
-    pub fn needs_param(&self, field: &str, call: &ToolCall, vault: Option<&Vault>) -> bool {
+    /// run in their own pass and are always reachable. With `locked_only`,
+    /// as under a pause, only locked rules count and INJECT is not consulted.
+    /// Lets hook mode skip costly parameter enrichment that could not change
+    /// the outcome.
+    pub fn needs_param(
+        &self,
+        field: &str,
+        call: &ToolCall,
+        vault: Option<&Vault>,
+        locked_only: bool,
+    ) -> bool {
         for rule in &self.rules {
             if rule.action == Decision::Inject || !auth_rule_applies(rule, call) {
                 continue;
             }
-            if conditions_need_param(&rule.conditions, field, call, vault) {
+            if (rule.locked || !locked_only)
+                && conditions_need_param(&rule.conditions, field, call, vault)
+            {
                 return true;
             }
             let undecided = rule
@@ -244,11 +254,12 @@ impl CompiledPolicy {
                 break;
             }
         }
-        self.rules.iter().any(|rule| {
-            rule.action == Decision::Inject
-                && rule.tool_regex.is_match(&call.tool_name)
-                && conditions_need_param(&rule.conditions, field, call, vault)
-        })
+        !locked_only
+            && self.rules.iter().any(|rule| {
+                rule.action == Decision::Inject
+                    && rule.tool_regex.is_match(&call.tool_name)
+                    && conditions_need_param(&rule.conditions, field, call, vault)
+            })
     }
 }
 

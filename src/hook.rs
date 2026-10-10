@@ -231,11 +231,13 @@ const TOOL_USE_POLL: Duration = Duration::from_millis(25);
 
 /// Attach `agent_model` to a parsed hook call when a rule or an active
 /// preflight constraint could turn on it. Resolution can wait on the host's
-/// transcript, so calls that nothing model-scoped could match skip it.
+/// transcript, so calls that nothing model-scoped could match skip it. While
+/// `paused`, only locked rules are enforced, so only they count.
 pub(crate) fn attach_agent_model(
     raw_input: &Value,
     policy: &CompiledPolicy,
     vault: Option<&Vault>,
+    paused: bool,
     call: &mut ToolCall,
 ) {
     let preflight_needs_model = || {
@@ -255,7 +257,9 @@ pub(crate) fn attach_agent_model(
                     })
             })
     };
-    if !policy.needs_param(AGENT_MODEL_FIELD, call, vault) && !preflight_needs_model() {
+    if !policy.needs_param(AGENT_MODEL_FIELD, call, vault, paused)
+        && (paused || !preflight_needs_model())
+    {
         return;
     }
     let Some(model) = resolve_agent_model(raw_input) else {
@@ -593,11 +597,13 @@ pub fn run_hook_with_adapter(
             return 0;
         }
     };
-    attach_agent_model(&raw_input, policy, vault, &mut call);
 
     // Check if paused — if so, only enforce locked (self-protection) rules
     // File-based global pause OR session-scoped global pause from pauses.json
-    if crate::vault::is_paused_file() || crate::vault::is_globally_paused_json() {
+    let paused = crate::vault::is_paused_file() || crate::vault::is_globally_paused_json();
+    attach_agent_model(&raw_input, policy, vault, paused, &mut call);
+
+    if paused {
         let result = policy::evaluate(&call, policy, vault);
         if result.decision == Decision::Deny && result.matched_locked {
             // Self-protection: locked deny always enforced during pause
@@ -1187,7 +1193,7 @@ rules:
     /// Parse and enrich exactly as hook mode does under a policy that reads agent_model.
     fn parse_with_model(input: Value, adapter: HookAdapter) -> ToolCall {
         let mut call = parse_tool_call_input(input.clone(), adapter).unwrap();
-        attach_agent_model(&input, &model_gate_policy(), None, &mut call);
+        attach_agent_model(&input, &model_gate_policy(), None, false, &mut call);
         call
     }
 
@@ -1456,7 +1462,7 @@ rules:
                 "model": "claude-opus-5-5"
             });
             let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
-            attach_agent_model(&input, policy, None, &mut call);
+            attach_agent_model(&input, policy, None, false, &mut call);
             call.parameters.get("agent_model").is_some()
         };
         assert!(attached("gcloud auth list", &model_gate_policy()));
@@ -1481,7 +1487,7 @@ rules:
             "model": model
         });
         let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
-        attach_agent_model(&input, policy, vault, &mut call);
+        attach_agent_model(&input, policy, vault, false, &mut call);
         policy::evaluate(&call, policy, vault).decision
     }
 
@@ -1494,7 +1500,7 @@ rules:
                 "model": "claude-opus-5-5"
             });
             let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
-            attach_agent_model(&input, policy, None, &mut call);
+            attach_agent_model(&input, policy, None, false, &mut call);
             call.parameters.get("agent_model").is_some()
         };
         let policy = |model_rule_action: &str| {
@@ -1528,6 +1534,40 @@ rules:
     }
 
     #[test]
+    fn agent_model_is_only_resolved_for_locked_rules_while_paused() {
+        let policy = |locked: bool| {
+            policy_from_yaml(&format!(
+                r#"
+version: 1
+default_action: ALLOW
+rules:
+  - name: gcloud_requires_opus
+    tool_pattern: "^Bash$"
+    conditions:
+      - "matches(command, '^gcloud ')"
+      - "not(matches(agent_model, '^claude-opus-'))"
+    action: DENY
+    locked: {locked}
+"#
+            ))
+        };
+        let attached = |policy: &CompiledPolicy, paused: bool| {
+            let input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "gcloud auth list"},
+                "model": "claude-opus-5-5"
+            });
+            let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
+            attach_agent_model(&input, policy, None, paused, &mut call);
+            call.parameters.get("agent_model").is_some()
+        };
+        assert!(attached(&policy(false), false));
+        // A pause enforces only locked rules, so nothing else is worth the wait.
+        assert!(!attached(&policy(false), true));
+        assert!(attached(&policy(true), true));
+    }
+
+    #[test]
     fn agent_model_gating_treats_vault_state_as_undecided() {
         crate::vault::set_test_session_id(Some("vault-state-gate"));
         let dir = tempfile::tempdir().unwrap();
@@ -1552,7 +1592,7 @@ rules:
             "model": "claude-haiku-4-5-20251001"
         });
         let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
-        attach_agent_model(&input, &policy, Some(&vault), &mut call);
+        attach_agent_model(&input, &policy, Some(&vault), false, &mut call);
         // The ledger changes between gating and evaluation, as a concurrent
         // hook or a transient read failure would make it.
         vault.log_action("EnterPlanMode", "allow", "", 0.0, "{}");
@@ -1605,7 +1645,7 @@ rules:
                 "model": model
             });
             let mut call = parse_tool_call_input(input.clone(), HookAdapter::Claude).unwrap();
-            attach_agent_model(&input, &policy, Some(&vault), &mut call);
+            attach_agent_model(&input, &policy, Some(&vault), false, &mut call);
             evaluate_preflight_constraint(&call, &preflight, &vault).is_some()
         };
         assert!(!violates("claude-opus-5-5"));

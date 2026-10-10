@@ -247,7 +247,8 @@ must already hold. Conditions that read the whole parameter set, such as
 `contains(parameters, ...)`, see `agent_model` too, so they are left
 undecided. So are vault readers such as `has_recent_action`, since the
 vault can change between this check and the decision. A rule behind an earlier rule that already matches is skipped,
-since authorization is first-match-wins; INJECT rules always count. Other
+since authorization is first-match-wins; INJECT rules always count.
+While enforcement is paused, only locked rules count. Other
 calls pay nothing. Any `agent_model` in the tool input itself is
 discarded, so the agent cannot claim a different model.
 
